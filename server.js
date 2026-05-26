@@ -334,4 +334,4 @@ app.get('/api/activity/screenshots', auth, managerOnly, (req, res) => {
   res.json(shots.sort((a, b) => new Date(b.ts) - new Date(a.ts)));
 });
 
-// ── Start ────────────────────────────────────────�
+// ── Start ────────────────────────────────────────�
