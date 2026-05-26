@@ -5,19 +5,32 @@ const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
+
+// Catch all errors early
+process.on('uncaughtException',  err => console.error('[uncaughtException]',  err));
+process.on('unhandledRejection', err => console.error('[unhandledRejection]', err));
 
 // ── Storage ────────────────────────────────────────────────────
-// DATA_DIR env var lets you point to a Render persistent disk (/data)
-// Falls back to a local .data folder for local development
-const DATA_DIR    = process.env.DATA_DIR || path.join(__dirname, '.data');
-const DB_FILE     = path.join(DATA_DIR, 'timetrack.json');
-const SHOTS_DIR   = path.join(DATA_DIR, 'screenshots');
+// Try DATA_DIR env var first (Render persistent disk), fall back to local .data
+let DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '.data');
+try {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const testFile = path.join(DATA_DIR, '.write-test');
+  fs.writeFileSync(testFile, 'ok');
+  fs.unlinkSync(testFile);
+  console.log('[storage] Using DATA_DIR:', DATA_DIR);
+} catch (e) {
+  console.error('[storage] DATA_DIR not writable, falling back to .data:', e.message);
+  DATA_DIR = path.join(__dirname, '.data');
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const DB_FILE       = path.join(DATA_DIR, 'timetrack.json');
+const SHOTS_DIR     = path.join(DATA_DIR, 'screenshots');
 const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
 
-for (const dir of [DATA_DIR, SHOTS_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
+if (!fs.existsSync(SHOTS_DIR)) fs.mkdirSync(SHOTS_DIR, { recursive: true });
 
 // ── Activity DB helpers ────────────────────────────────────────
 function loadActivity() {
@@ -334,4 +347,12 @@ app.get('/api/activity/screenshots', auth, managerOnly, (req, res) => {
   res.json(shots.sort((a, b) => new Date(b.ts) - new Date(a.ts)));
 });
 
-// ── Start ────────────────────────────────────────�
+// ── Start ──────────────────────────────────────────────────────
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Wachadoin.com running on port ${PORT}`);
+});
+
+server.on('error', err => {
+  console.error('[server error]', err);
+  process.exit(1);
+});
