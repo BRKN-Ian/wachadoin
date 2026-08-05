@@ -140,6 +140,16 @@ app.get('/api/users', auth, managerOnly, (req, res) => {
   res.json(db.users.map(u => ({ id:u.id, name:u.name, email:u.email, role:u.role })));
 });
 
+app.delete('/api/users/:id', auth, managerOnly, (req, res) => {
+  const db  = loadDB();
+  const idx = db.users.findIndex(u => u.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'User not found' });
+  if (db.users[idx].role === 'manager') return res.status(400).json({ error: 'Cannot delete a manager account' });
+  db.users.splice(idx, 1);
+  saveDB(db);
+  res.json({ ok: true });
+});
+
 // ── Entries ────────────────────────────────────────────────────
 app.post('/api/entries', auth, (req, res) => {
   const { project, task } = req.body;
@@ -327,32 +337,4 @@ app.get('/api/activity/appusage', auth, managerOnly, (req, res) => {
   const activity = loadActivity();
   const date     = req.query.date || new Date().toISOString().split('T')[0];
   let apps = activity.apps.filter(a => a.ts.startsWith(date));
-  if (req.query.userId) apps = apps.filter(a => a.userId === req.query.userId);
-  const counts = {};
-  for (const a of apps) {
-    const key = `${a.userId}|||${a.appName}`;
-    counts[key] = (counts[key] || 0) + 1;
-  }
-  res.json(Object.entries(counts)
-    .map(([key, count]) => { const [uid, appName] = key.split('|||'); return { userId: uid, appName, count }; })
-    .sort((a, b) => b.count - a.count));
-});
-
-// GET /api/activity/screenshots?date=YYYY-MM-DD&userId=xxx — screenshot list
-app.get('/api/activity/screenshots', auth, managerOnly, (req, res) => {
-  const activity = loadActivity();
-  const date     = req.query.date || new Date().toISOString().split('T')[0];
-  let shots = activity.screenshots.filter(s => s.ts.startsWith(date));
-  if (req.query.userId) shots = shots.filter(s => s.userId === req.query.userId);
-  res.json(shots.sort((a, b) => new Date(b.ts) - new Date(a.ts)));
-});
-
-// ── Start ──────────────────────────────────────────────────────
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Wachadoin.com running on port ${PORT}`);
-});
-
-server.on('error', err => {
-  console.error('[server error]', err);
-  process.exit(1);
-});
+  if (req.query.userId) apps = a

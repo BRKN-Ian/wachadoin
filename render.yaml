@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: wachadoin
+    env: node
+    plan: starter   # $7/mo — required for the persistent disk below; free tier is ephemeral-only
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: JWT_SECRET
+        generateValue: true   # Render auto-generates a secure random value
+    disk:
+      name: wachadoin-data
+      mountPath: /data
+      sizeGB: 1
