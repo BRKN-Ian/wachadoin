@@ -360,6 +360,34 @@ tr:hover td { background: rgba(99,102,241,.05); }
       <div id="shotsContainer"></div>
     </div>
 
+    <!-- Admin (manager) -->
+    <div class="page" id="pgAdmin">
+      <div class="page-header"><div><div class="page-title">Team Members</div><div class="page-sub">Add and manage employee accounts</div></div></div>
+
+      <!-- Add employee form -->
+      <div class="card" style="max-width:480px;margin-bottom:24px">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Employee</h3>
+        <label>Full name</label>
+        <input id="newName"  type="text"  placeholder="Jane Smith">
+        <label>Email address</label>
+        <input id="newEmail" type="email" placeholder="jane@yourcompany.com">
+        <label>Password</label>
+        <input id="newPass"  type="text"  placeholder="Set a temporary password">
+        <button class="btn btn-primary" style="margin-top:4px" onclick="createEmployee()">Add Employee</button>
+        <div class="err-box" id="addErr"></div>
+        <div id="addOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
+      </div>
+
+      <!-- Employee list -->
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Current Employees</h3>
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+          <tbody id="userListBody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- My Activity (employee) -->
     <div class="page" id="pgMine">
       <div class="page-header"><div><div class="page-title">My Activity</div><div class="page-sub">Your activity log</div></div></div>
@@ -472,6 +500,7 @@ const MANAGER_NAV = [
   { id:'pgApps',     icon:'📱', label:'App Usage' },
   { id:'pgTimeline', icon:'📊', label:'Activity Timeline' },
   { id:'pgShots',    icon:'📷', label:'Screenshots' },
+  { id:'pgAdmin',    icon:'👥', label:'Team Members' },
 ];
 const EMPLOYEE_NAV = [
   { id:'pgMine', icon:'📊', label:'My Activity' },
@@ -489,6 +518,7 @@ function showPage(id) {
   document.querySelectorAll('.sb-link').forEach(l => l.classList.remove('active'));
   document.getElementById(id)?.classList.add('active');
   document.querySelector(`[data-page="${id}"]`)?.classList.add('active');
+  if (id === 'pgAdmin') loadUserList();
 }
 
 // ── App init ──────────────────────────────────────────────────────────────────
@@ -680,33 +710,4 @@ async function loadScreenshots() {
 }
 
 function openLb(src) { document.getElementById('lbImg').src = src; document.getElementById('lightbox').classList.add('open'); }
-function closeLb()   { document.getElementById('lightbox').classList.remove('open'); document.getElementById('lbImg').src = ''; }
-
-// ── My Activity (employee) ───────────────────────────────────────────────────
-async function loadMyActivity() {
-  const date = document.getElementById('mineDate').value || todayStr();
-  const logs = await api(`/api/activity/logs?date=${date}&userId=${me.id}`);
-  const tbody = document.getElementById('mineBody');
-  if (!logs.length) {
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:40px">No data for ${date}</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = logs.map(l => `
-    <tr>
-      <td>${fmtTime(l.ts)}</td>
-      <td><span style="color:${scoreColor(l.activityScore)};font-weight:700">${l.activityScore??0}%</span></td>
-      <td><span class="pill ${l.isIdle ? 'pill-yellow' : 'pill-green'}">${l.isIdle ? 'Idle' : 'Active'}</span></td>
-    </tr>`).join('');
-}
-
-// ── Boot ─────────────────────────────────────────────────────────────────────
-if (token && me) {
-  fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } })
-    .then(r => r.status === 401 ? logout() : initApp())
-    .catch(() => initApp());
-} else {
-  document.getElementById('authScreen').style.display = 'flex';
-}
-</script>
-</body>
-</html>
+function closeLb()   { document.getElementById('lightbox').classList.remove('open'); document.getElementById(
