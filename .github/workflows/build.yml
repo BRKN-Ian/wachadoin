@@ -1,0 +1,56 @@
+name: Build Wachadoin Agent installers
+
+# Builds the real Windows (.exe) and Mac (.dmg) installers on GitHub's own Windows and
+# Mac runners. This can't be done from a Linux machine — Mac builds need a real Mac to
+# produce a .dmg, and while Windows .exe builds can sometimes be cross-compiled with
+# Wine, doing it on an actual Windows runner is far more reliable. Every push that
+# touches the agent/ folder builds both; the finished installers are attached as
+# downloadable build artifacts (see the Actions tab > this run > Artifacts).
+#
+# To enable: push this repo (or just the agent/ folder) to GitHub, then Actions runs
+# automatically. No secrets or code-signing setup required to get an unsigned installer
+# working — see agent/README.md for what code-signing adds and how to add it later.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+  workflow_dispatch: {}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WachadoinAgent-Windows
+          path: agent/release/*.exe
+
+  build-mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run dist:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WachadoinAgent-Mac
+          path: |
+            agent/release/*.dmg
+            agent/release/*.zip
