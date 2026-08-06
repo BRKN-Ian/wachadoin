@@ -1,6 +1,7 @@
 const express = require('express');
 const path    = require('path');
 const fs      = require('fs');
+const crypto  = require('crypto');
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 
@@ -39,16 +40,112 @@ function loadActivity() {
   catch { return { heartbeats: [], apps: [], screenshots: [] }; }
 }
 
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — keep this in sync with the POPIA staff notice
+
 function saveActivity(data) {
-  // Prune entries older than 7 days to keep file manageable
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  data.heartbeats  = (data.heartbeats  || []).filter(r => new Date(r.ts) > cutoff);
-  data.apps        = (data.apps        || []).filter(r => new Date(r.ts) > cutoff);
-  data.screenshots = (data.screenshots || []).filter(r => new Date(r.ts) > cutoff);
+  // Prune entries older than the retention window to keep the file manageable. For
+  // screenshots this also deletes the actual JPEG from disk, not just the record —
+  // otherwise old screenshots would keep existing as orphaned files forever even
+  // though the dashboard no longer shows them, which would make the retention period
+  // promised to staff untrue.
+  const cutoff = Date.now() - RETENTION_MS;
+  data.heartbeats = (data.heartbeats || []).filter(r => new Date(r.ts) > cutoff);
+  data.apps       = (data.apps       || []).filter(r => new Date(r.ts) > cutoff);
+
+  const keepShots = [];
+  for (const s of (data.screenshots || [])) {
+    if (new Date(s.ts) > cutoff) {
+      keepShots.push(s);
+    } else {
+      try { fs.unlinkSync(path.join(SHOTS_DIR, s.filename)); } catch {}
+    }
+  }
+  data.screenshots = keepShots;
+
   fs.writeFileSync(ACTIVITY_FILE, JSON.stringify(data));
 }
 
+// Belt-and-braces: also sweep SHOTS_DIR directly for any screenshot file older than the
+// retention window whose record may have been lost (e.g. an old file from before this
+// cleanup existed, or an activity.json write that didn't complete). Runs on boot and daily.
+function sweepOldScreenshots() {
+  try {
+    const cutoff = Date.now() - RETENTION_MS;
+    for (const f of fs.readdirSync(SHOTS_DIR)) {
+      const fp = path.join(SHOTS_DIR, f);
+      try { if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp); } catch {}
+    }
+  } catch {}
+}
+sweepOldScreenshots();
+setInterval(sweepOldScreenshots, 24 * 60 * 60 * 1000);
+
 const JWT_SECRET = process.env.JWT_SECRET || 'timetrack-secret-please-change-me';
+
+// Long-lived per-user token used by the desktop Agent (not the 7-day web login JWT).
+// The agent authenticates with this so it can run indefinitely without anyone logging in.
+function genAgentToken() {
+  return 'wag_' + crypto.randomBytes(24).toString('hex');
+}
+
+// ── App/website rules ────────────────────────────────────────────────────────
+// Managers classify apps & window titles (which, for a browser, usually include the
+// page/site title) as "work" or "redflag" so the dashboard can highlight time spent
+// off-task. Matching is a simple case-insensitive substring match against "<appName>
+// <title>". Suggested starter list for a South African accounting firm — editable
+// and fully replaceable per-account from the Monitoring Rules page.
+const SUGGESTED_RULES = [
+  // Work-related — accounting/practice tools
+  { pattern: 'xero',            category: 'work' },
+  { pattern: 'simplepay',       category: 'work' },
+  { pattern: 'payspace',        category: 'work' },
+  { pattern: 'caseware',        category: 'work' },
+  { pattern: 'draftworx',       category: 'work' },
+  { pattern: 'pastel',          category: 'work' },
+  { pattern: 'sars efiling',    category: 'work' },
+  { pattern: 'cipc',            category: 'work' },
+  { pattern: 'docfox',          category: 'work' },
+  { pattern: 'outlook',         category: 'work' },
+  { pattern: 'microsoft word',  category: 'work' },
+  { pattern: 'microsoft excel', category: 'work' },
+  { pattern: 'google sheets',   category: 'work' },
+  { pattern: 'google docs',     category: 'work' },
+  { pattern: 'microsoft teams', category: 'work' },
+  { pattern: 'zoom',            category: 'work' },
+  // Red flags — social/entertainment
+  { pattern: 'youtube',         category: 'redflag' },
+  { pattern: 'facebook',        category: 'redflag' },
+  { pattern: 'instagram',       category: 'redflag' },
+  { pattern: 'tiktok',          category: 'redflag' },
+  { pattern: 'twitter',         category: 'redflag' },
+  { pattern: 'netflix',         category: 'redflag' },
+  { pattern: 'twitch',          category: 'redflag' },
+  // Red flags — competing/side-work bookkeeping tools (this firm runs on Xero)
+  { pattern: 'zoho',            category: 'redflag' },
+  { pattern: 'sage one',        category: 'redflag' },
+  { pattern: 'sage business cloud', category: 'redflag' },
+  { pattern: 'quickbooks',      category: 'redflag' },
+  // Red flags — job hunting (possible morale/retention issue worth a quiet check-in)
+  { pattern: 'linkedin jobs',   category: 'redflag' },
+  { pattern: 'indeed.co',       category: 'redflag' },
+  { pattern: 'pnet',            category: 'redflag' },
+  { pattern: 'careerjunction',  category: 'redflag' },
+  { pattern: 'careers24',       category: 'redflag' },
+  { pattern: 'gumtree jobs',    category: 'redflag' },
+];
+
+function ensureRules(db) {
+  if (!db.rules) { db.rules = SUGGESTED_RULES.map(r => ({ id: crypto.randomUUID(), ...r })); return true; }
+  return false;
+}
+
+function classify(db, appName, title) {
+  const hay = `${appName || ''} ${title || ''}`.toLowerCase();
+  for (const r of (db.rules || [])) {
+    if (hay.includes(r.pattern.toLowerCase())) return r.category;
+  }
+  return 'neutral';
+}
 
 // ── DB helpers ─────────────────────────────────────────────────
 function loadDB() {
@@ -75,10 +172,10 @@ async function maybeSeed() {
   const today   = new Date().toISOString().split('T')[0];
 
   db.users = [
-    { id:'u1', name:'Admin Manager',  email:'admin@timetrack.com',  passwordHash:manHash, role:'manager',  createdAt:new Date().toISOString() },
-    { id:'u2', name:'Sarah Johnson',  email:'sarah@timetrack.com',  passwordHash:empHash, role:'employee', createdAt:new Date().toISOString() },
-    { id:'u3', name:'Marcus Chen',    email:'marcus@timetrack.com', passwordHash:empHash, role:'employee', createdAt:new Date().toISOString() },
-    { id:'u4', name:'Tom Walker',     email:'tom@timetrack.com',    passwordHash:empHash, role:'employee', createdAt:new Date().toISOString() },
+    { id:'u1', name:'Admin Manager',  email:'admin@timetrack.com',  passwordHash:manHash, role:'manager',  agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u2', name:'Sarah Johnson',  email:'sarah@timetrack.com',  passwordHash:empHash, role:'employee', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u3', name:'Marcus Chen',    email:'marcus@timetrack.com', passwordHash:empHash, role:'employee', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u4', name:'Tom Walker',     email:'tom@timetrack.com',    passwordHash:empHash, role:'employee', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
   ];
   db.entries = [
     { id:'e1', userId:'u2', userName:'Sarah Johnson', project:'Acme Corp – Website Redesign', task:'Frontend Development', startTime:`${today}T08:02:00.000Z`, endTime:`${today}T10:45:00.000Z`, durationMs:9780000,  activityScore:91, screenshotCount:18, status:'completed' },
@@ -100,6 +197,18 @@ app.use(express.static(path.join(__dirname, 'public')));
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
+
+  // Long-lived Agent tokens (used by the desktop background agent, not a browser login)
+  // look like "wag_...". They never expire, so the agent can run indefinitely with no
+  // one logging in. Anything else is treated as a normal 7-day web-login JWT.
+  if (token.startsWith('wag_')) {
+    const db   = loadDB();
+    const user = db.users.find(u => u.agentToken === token);
+    if (!user) return res.status(401).json({ error: 'Invalid agent token' });
+    req.user = { id: user.id, name: user.name, email: user.email, role: user.role, viaAgent: true };
+    return next();
+  }
+
   try { req.user = jwt.verify(token, JWT_SECRET); next(); }
   catch { res.status(401).json({ error: 'Invalid or expired token' }); }
 }
@@ -117,11 +226,12 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ error: 'Email already registered' });
   const passwordHash = await bcrypt.hash(password, 10);
   const user = { id: Date.now().toString(), name: name.trim(), email: email.toLowerCase().trim(),
-                 passwordHash, role: role === 'manager' ? 'manager' : 'employee', createdAt: new Date().toISOString() };
+                 passwordHash, role: role === 'manager' ? 'manager' : 'employee',
+                 agentToken: genAgentToken(), createdAt: new Date().toISOString() };
   db.users.push(user);
   saveDB(db);
   const token = jwt.sign({ id:user.id, name:user.name, email:user.email, role:user.role }, JWT_SECRET, { expiresIn:'7d' });
-  res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role } });
+  res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role, popiaAcknowledgedAt:user.popiaAcknowledgedAt||null } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -131,13 +241,49 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user || !(await bcrypt.compare(password, user.passwordHash)))
     return res.status(401).json({ error: 'Invalid email or password' });
   const token = jwt.sign({ id:user.id, name:user.name, email:user.email, role:user.role }, JWT_SECRET, { expiresIn:'7d' });
-  res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role } });
+  res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role, popiaAcknowledgedAt:user.popiaAcknowledgedAt||null } });
+});
+
+// Acknowledge the POPIA monitoring notice (shown once to new managers before they can
+// start monitoring staff). Anyone can ack their own account.
+app.post('/api/auth/popia-ack', auth, (req, res) => {
+  const db   = loadDB();
+  const user = db.users.find(u => u.id === req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  user.popiaAcknowledgedAt = new Date().toISOString();
+  saveDB(db);
+  res.json({ ok: true, popiaAcknowledgedAt: user.popiaAcknowledgedAt });
 });
 
 // ── Users ──────────────────────────────────────────────────────
 app.get('/api/users', auth, managerOnly, (req, res) => {
   const db = loadDB();
   res.json(db.users.map(u => ({ id:u.id, name:u.name, email:u.email, role:u.role })));
+});
+
+// GET the Agent setup key for a user — used to install the desktop background agent on
+// their machine (Windows or Mac) so it can run without them ever logging in day-to-day.
+// A manager can fetch anyone's; an employee can fetch only their own.
+app.get('/api/users/:id/agent-token', auth, (req, res) => {
+  if (req.user.role !== 'manager' && req.user.id !== req.params.id)
+    return res.status(403).json({ error: 'Not allowed' });
+  const db   = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user.agentToken) { user.agentToken = genAgentToken(); saveDB(db); }
+  res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
+});
+
+// Regenerate (invalidate + replace) a user's Agent key, e.g. if a laptop is lost/decommissioned.
+app.post('/api/users/:id/agent-token/regenerate', auth, (req, res) => {
+  if (req.user.role !== 'manager' && req.user.id !== req.params.id)
+    return res.status(403).json({ error: 'Not allowed' });
+  const db   = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  user.agentToken = genAgentToken();
+  saveDB(db);
+  res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
 });
 
 app.delete('/api/users/:id', auth, managerOnly, (req, res) => {
@@ -269,9 +415,12 @@ app.post('/api/activity', auth, (req, res) => {
 
   if (type === 'app') {
     const { appName, title } = req.body;
-    activity.apps.push({ userId, userName, appName, title, ts: now });
+    const db = loadDB();
+    ensureRules(db) && saveDB(db);
+    const category = classify(db, appName, title);
+    activity.apps.push({ userId, userName, appName, title, category, ts: now });
     saveActivity(activity);
-    return res.json({ ok: true });
+    return res.json({ ok: true, category });
   }
 
   if (type === 'screenshot') {
@@ -296,6 +445,7 @@ app.post('/api/activity', auth, (req, res) => {
 app.get('/api/activity/status', auth, managerOnly, (req, res) => {
   const activity = loadActivity();
   const db       = loadDB();
+  ensureRules(db);
 
   const latest = {};
   for (const hb of activity.heartbeats) {
@@ -319,8 +469,43 @@ app.get('/api/activity/status', auth, managerOnly, (req, res) => {
       online: !!online, lastSeen: hb?.ts || null,
       activityScore: hb?.activityScore ?? null, isIdle: hb?.isIdle ?? null, idleSecs: hb?.idleSecs ?? null,
       activeApp: ap?.appName || null, activeTitle: ap?.title || null, appTs: ap?.ts || null,
+      flag: ap ? classify(db, ap.appName, ap.title) : null,
     };
   }));
+});
+
+// ── Monitoring rules (manager only) ───────────────────────────────────────────
+app.get('/api/settings/rules', auth, managerOnly, (req, res) => {
+  const db = loadDB();
+  const changed = ensureRules(db);
+  if (changed) saveDB(db);
+  res.json(db.rules);
+});
+
+app.put('/api/settings/rules', auth, managerOnly, (req, res) => {
+  const { rules } = req.body;
+  if (!Array.isArray(rules)) return res.status(400).json({ error: 'rules array required' });
+  const db = loadDB();
+  db.rules = rules
+    .filter(r => r && r.pattern && (r.category === 'work' || r.category === 'redflag'))
+    .map(r => ({ id: r.id || crypto.randomUUID(), pattern: r.pattern.trim(), category: r.category }));
+  saveDB(db);
+  res.json(db.rules);
+});
+
+// Merge in the suggested accounting-firm starter list without wiping custom rules already added
+app.post('/api/settings/rules/suggested', auth, managerOnly, (req, res) => {
+  const db = loadDB();
+  ensureRules(db);
+  const existing = new Set(db.rules.map(r => r.pattern.toLowerCase()));
+  for (const s of SUGGESTED_RULES) {
+    if (!existing.has(s.pattern.toLowerCase())) {
+      db.rules.push({ id: crypto.randomUUID(), ...s });
+      existing.add(s.pattern.toLowerCase());
+    }
+  }
+  saveDB(db);
+  res.json(db.rules);
 });
 
 // GET /api/activity/logs?date=YYYY-MM-DD&userId=xxx — heartbeat timeline
@@ -335,16 +520,26 @@ app.get('/api/activity/logs', auth, managerOnly, (req, res) => {
 // GET /api/activity/appusage?date=YYYY-MM-DD&userId=xxx — top apps
 app.get('/api/activity/appusage', auth, managerOnly, (req, res) => {
   const activity = loadActivity();
+  const db       = loadDB();
+  ensureRules(db);
   const date     = req.query.date || new Date().toISOString().split('T')[0];
   let apps = activity.apps.filter(a => a.ts.startsWith(date));
   if (req.query.userId) apps = apps.filter(a => a.userId === req.query.userId);
   const counts = {};
   for (const a of apps) {
     const key = `${a.userId}|||${a.appName}`;
-    counts[key] = (counts[key] || 0) + 1;
+    if (!counts[key]) counts[key] = { count: 0, redflag: 0, work: 0 };
+    counts[key].count++;
+    const cat = classify(db, a.appName, a.title);
+    if (cat === 'redflag') counts[key].redflag++;
+    else if (cat === 'work') counts[key].work++;
   }
   res.json(Object.entries(counts)
-    .map(([key, count]) => { const [uid, appName] = key.split('|||'); return { userId: uid, appName, count }; })
+    .map(([key, v]) => {
+      const [uid, appName] = key.split('|||');
+      const category = v.redflag > 0 ? 'redflag' : (v.work > 0 ? 'work' : 'neutral');
+      return { userId: uid, appName, count: v.count, category };
+    })
     .sort((a, b) => b.count - a.count));
 });
 
