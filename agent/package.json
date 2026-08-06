@@ -45,7 +45,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
-      "artifactName": "WachadoinAgent-Setup-${version}.${ext}"
+      "artifactName": "WachadoinAgent-Setup.${ext}"
     },
     "mac": {
       "target": [
@@ -62,7 +62,7 @@
       }
     },
     "dmg": {
-      "artifactName": "WachadoinAgent-${version}.${ext}"
+      "artifactName": "WachadoinAgent.${ext}"
     }
   }
 }
