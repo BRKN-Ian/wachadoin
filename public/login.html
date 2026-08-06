@@ -1,0 +1,1115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wachadoin — Activity Monitor</title>
+<style>
+/* ── Reset & Base ──────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #071a38;
+  --surface:  #0e2749;
+  --border:   #1c3a63;
+  --muted:    #4f6d94;
+  --text:     #e6edf7;
+  --dim:      #93a8c6;
+  --primary:  #00c2c4;
+  --green:    #22c55e;
+  --yellow:   #eab308;
+  --red:      #ef4444;
+  --orange:   #f97316;
+  --radius:   12px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Auth Screen ───────────────────────────────────────────────────────────── */
+#authScreen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 400px;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; }
+.brand-icon {
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+}
+.brand-icon img { width: 100%; height: 100%; object-fit: contain; }
+.brand-name { font-size: 24px; font-weight: 700; }
+.brand-sub  { font-size: 12px; color: var(--muted); }
+
+.auth-card h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
+
+label { display: block; font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: 6px; }
+input {
+  display: block; width: 100%;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  margin-bottom: 14px;
+  outline: none;
+  transition: border-color .15s;
+}
+input:focus { border-color: var(--primary); }
+input::placeholder { color: var(--muted); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: .85; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn-primary { background: linear-gradient(135deg, var(--primary), #0a3a63); color: #fff; width: 100%; padding: 12px; font-size: 15px; }
+.btn-sm { padding: 6px 14px; font-size: 13px; }
+.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--dim); }
+.btn-ghost:hover { border-color: var(--primary); color: var(--text); opacity: 1; }
+
+.err-box {
+  background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5;
+  padding: 10px 14px; border-radius: 8px; font-size: 13px;
+  margin-top: 10px; display: none;
+}
+
+/* ── App Shell ─────────────────────────────────────────────────────────────── */
+#appShell { display: none; min-height: 100vh; }
+
+/* ── Sidebar ────────────────────────────────────────────────────────────────── */
+.sidebar {
+  position: fixed; top: 0; left: 0; bottom: 0;
+  width: 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  z-index: 100;
+}
+
+.sb-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sb-brand-icon {
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+}
+.sb-brand-icon img { width: 100%; height: 100%; object-fit: contain; }
+.sb-brand-name { font-size: 16px; font-weight: 700; }
+
+.sb-nav { flex: 1; padding: 12px 8px; }
+.sb-link {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background .12s, color .12s;
+  margin-bottom: 2px;
+}
+.sb-link:hover { background: rgba(0,194,196,.1); color: var(--text); }
+.sb-link.active { background: rgba(0,194,196,.15); color: var(--primary); }
+.sb-link .icon { font-size: 16px; width: 20px; text-align: center; }
+
+.sb-footer {
+  padding: 12px 8px;
+  border-top: 1px solid var(--border);
+}
+.sb-user { padding: 10px 12px; display: flex; align-items: center; gap: 8px; }
+.sb-avatar {
+  width: 30px; height: 30px;
+  background: linear-gradient(135deg, var(--primary), #0a3a63);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #fff;
+  flex-shrink: 0;
+}
+.sb-user-name { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* ── Main content ───────────────────────────────────────────────────────────── */
+.main { margin-left: 220px; padding: 28px; min-height: 100vh; }
+.page { display: none; }
+.page.active { display: block; }
+
+.page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px;
+}
+.page-title { font-size: 22px; font-weight: 700; }
+.page-sub   { font-size: 13px; color: var(--dim); margin-top: 2px; }
+
+/* ── Cards / Grid ────────────────────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+.stat-label { font-size: 12px; color: var(--dim); font-weight: 500; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+.stat-value { font-size: 28px; font-weight: 700; }
+.stat-sub   { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ── Employee cards (Live Status) ──────────────────────────────────────────── */
+.emp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.emp-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+.emp-card.online  { border-left: 3px solid var(--green); }
+.emp-card.idle    { border-left: 3px solid var(--yellow); }
+.emp-card.offline { border-left: 3px solid var(--muted); }
+
+.emp-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.emp-avatar {
+  width: 38px; height: 38px;
+  background: linear-gradient(135deg, var(--primary), #0a3a63);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.emp-info { flex: 1; min-width: 0; }
+.emp-name  { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.emp-email { font-size: 12px; color: var(--dim); }
+
+.status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.dot-green  { background: var(--green);  box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
+.dot-yellow { background: var(--yellow); box-shadow: 0 0 0 3px rgba(234,179,8,.2); }
+.dot-gray   { background: var(--muted); }
+
+.emp-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.emp-stat  { background: var(--bg); border-radius: 8px; padding: 10px 12px; }
+.emp-stat-label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.emp-stat-value { font-size: 16px; font-weight: 700; }
+
+.activity-bar-wrap { margin-top: 4px; }
+.activity-bar-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+.activity-bar { height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.activity-bar-fill { height: 100%; border-radius: 99px; transition: width .5s; }
+
+.emp-app { font-size: 12px; color: var(--dim); background: var(--bg); border-radius: 8px; padding: 8px 12px; margin-top: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Date picker bar ─────────────────────────────────────────────────────────── */
+.date-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+.date-bar input[type=date] { margin: 0; width: auto; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); }
+select { padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; outline: none; }
+select:focus { border-color: var(--primary); }
+
+/* ── App usage ───────────────────────────────────────────────────────────────── */
+.app-usage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.app-usage-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+.app-usage-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+.app-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.app-name  { font-size: 13px; width: 130px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-count { font-size: 12px; color: var(--dim); white-space: nowrap; }
+.app-bar   { flex: 1; height: 5px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.app-bar-fill { height: 100%; background: var(--primary); border-radius: 99px; }
+
+/* ── Activity Timeline ──────────────────────────────────────────────────────── */
+.timeline-wrap { overflow-x: auto; padding-bottom: 8px; }
+.timeline-grid { display: flex; flex-direction: column; gap: 12px; min-width: 600px; }
+.tl-row   { display: flex; align-items: center; gap: 12px; }
+.tl-label { width: 130px; font-size: 13px; font-weight: 500; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-bar   { flex: 1; height: 26px; background: var(--bg); border-radius: 6px; position: relative; overflow: hidden; }
+.tl-segment { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+.seg-active { background: var(--green); }
+.seg-idle   { background: var(--yellow); opacity: .5; }
+.tl-hours { display: flex; margin-left: 142px; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.tl-hour  { flex: 1; }
+
+/* ── Screenshots ─────────────────────────────────────────────────────────────── */
+.shots-emp-section { margin-bottom: 28px; }
+.shots-emp-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.shots-emp-name { font-size: 15px; font-weight: 600; }
+.shots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.shot-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; cursor: pointer; transition: border-color .15s; }
+.shot-card:hover { border-color: var(--primary); }
+.shot-img  { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: #1e293b; }
+.shot-meta { padding: 8px 10px; font-size: 11px; color: var(--dim); display: flex; justify-content: space-between; }
+
+/* ── Lightbox ───────────────────────────────────────────────────────────────── */
+#lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+#lightbox.open { display: flex; }
+#lightbox img { max-width: 95vw; max-height: 90vh; border-radius: 8px; }
+.close-lb { position: fixed; top: 16px; right: 20px; font-size: 28px; cursor: pointer; color: #fff; background: none; border: none; line-height: 1; }
+
+/* ── Generic modal ─────────────────────────────────────────────────────────── */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 1100; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.open { display: flex; }
+.modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 32px; width: 100%; max-width: 520px; max-height: 88vh; overflow-y: auto; }
+.modal-box h2 { font-size: 18px; font-weight: 700; margin-bottom: 14px; }
+.modal-box h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; }
+.modal-box p, .modal-box li { font-size: 13px; color: var(--dim); line-height: 1.6; }
+.modal-box ul { padding-left: 18px; margin: 6px 0 6px; }
+.modal-box .modal-actions { display: flex; gap: 10px; margin-top: 22px; }
+.key-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+.key-field { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; font-size: 12px; font-family: monospace; color: var(--text); word-break: break-all; }
+
+/* ── Rule pills ────────────────────────────────────────────────────────────── */
+.rule-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.rule-pill { display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--border); border-radius: 99px; padding: 5px 6px 5px 12px; font-size: 12px; }
+.rule-pill button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 50%; }
+.rule-pill button:hover { color: var(--red); background: rgba(239,68,68,.12); }
+.emp-card.flagged { border-left: 3px solid var(--red); }
+.flag-banner { font-size: 12px; color: var(--red); background: rgba(239,68,68,.12); border-radius: 8px; padding: 8px 12px; margin-top: 10px; font-weight: 600; }
+
+/* ── Misc ──────────────────────────────────────────────────────────────────── */
+.empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+.empty .ei { font-size: 40px; margin-bottom: 12px; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+.pill-green  { background: rgba(34,197,94,.15);  color: var(--green);  }
+.pill-yellow { background: rgba(234,179,8,.15);  color: var(--yellow); }
+.pill-gray   { background: rgba(71,85,105,.2);   color: var(--dim);    }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px; }
+th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+tr:hover td { background: rgba(0,194,196,.05); }
+
+/* Hover tooltips — used for the small "ⓘ" info dots that explain a stat, button, or
+   setting in more depth than fits inline. Pure CSS, no JS, so it can't silently break. */
+.info-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--border); color: var(--dim); font-size: 10px; font-weight: 700;
+  cursor: help; margin-left: 6px; position: relative; vertical-align: middle;
+}
+.info-dot:hover, .info-dot:focus { background: var(--primary); color: var(--bg); }
+.info-dot::after {
+  content: attr(data-tip);
+  position: absolute; bottom: 145%; left: 50%; transform: translateX(-50%);
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 400; line-height: 1.4;
+  width: 230px; white-space: normal; text-align: left;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  opacity: 0; visibility: hidden; transition: opacity .1s;
+  z-index: 80; pointer-events: none;
+}
+.info-dot::before {
+  content: ''; position: absolute; bottom: 128%; left: 50%; transform: translateX(-50%);
+  border: 5px solid transparent; border-top-color: var(--border);
+  opacity: 0; visibility: hidden; transition: opacity .1s; z-index: 80;
+}
+.info-dot:hover::after, .info-dot:hover::before,
+.info-dot:focus::after, .info-dot:focus::before { opacity: 1; visibility: visible; }
+.help-section { margin-bottom: 28px; }
+.help-section h3 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.help-section p, .help-section li { color: var(--dim); font-size: 13px; line-height: 1.6; }
+.help-section ol, .help-section ul { padding-left: 20px; margin-top: 6px; }
+.help-section li { margin-bottom: 6px; }
+.help-section strong { color: var(--text); }
+.help-page-list { display: grid; gap: 10px; }
+.help-page-list .hp-row { display: flex; gap: 10px; align-items: flex-start; }
+.help-page-list .hp-icon { font-size: 16px; flex: 0 0 auto; width: 22px; text-align: center; }
+</style>
+</head>
+<body>
+
+<!-- ── Auth Screen ─────────────────────────────────────────────────────────── -->
+<div id="authScreen">
+  <div class="auth-card">
+    <a href="/" style="display:inline-block;margin-bottom:14px;font-size:12px;color:var(--dim);text-decoration:none" title="Back to the Wachadoin homepage">&larr; wachadoin.com</a>
+    <div class="brand">
+      <div class="brand-icon"><img src="data:image/png;base64,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" alt="Watchadoin"></div>
+      <div><div class="brand-name">Wachadoin</div><div class="brand-sub">Activity Monitor</div></div>
+    </div>
+    <h2>Sign in to your account</h2>
+    <label>Email</label>
+    <input id="loginEmail" type="email" placeholder="admin@timetrack.com" autocomplete="username">
+    <label>Password</label>
+    <input id="loginPass"  type="password" placeholder="••••••••" autocomplete="current-password">
+    <button class="btn btn-primary" id="btnLogin">Sign in</button>
+    <div class="err-box" id="loginErr"></div>
+  </div>
+</div>
+
+<!-- ── App Shell ──────────────────────────────────────────────────────────── -->
+<div id="appShell">
+  <div class="sidebar">
+    <a href="/" class="sb-brand" style="text-decoration:none;color:inherit" title="Back to the Wachadoin homepage">
+      <div class="sb-brand-icon"><img src="data:image/png;base64,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" alt="Watchadoin"></div>
+      <div class="sb-brand-name">Wachadoin</div>
+    </a>
+    <nav class="sb-nav" id="sidebarNav"></nav>
+    <div class="sb-footer">
+      <div class="sb-user">
+        <div class="sb-avatar" id="sbAvatar">?</div>
+        <div class="sb-user-name" id="sbName">—</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="logout()" style="width:100%;margin-top:6px">Sign out</button>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <!-- Live Status (manager) -->
+    <div class="page" id="pgStatus">
+      <div class="page-header">
+        <div><div class="page-title">Live Status</div><div class="page-sub">Auto-refreshes every 15 seconds</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="loadStatus()">↻ Refresh</button>
+      </div>
+      <div class="stat-grid" id="statusStats"></div>
+      <div class="emp-grid"  id="empGrid"></div>
+    </div>
+
+    <!-- App Usage (manager) -->
+    <div class="page" id="pgApps">
+      <div class="page-header"><div><div class="page-title">App Usage</div><div class="page-sub">Applications used per employee</div></div></div>
+      <div class="date-bar">
+        <label style="margin:0">Date</label>
+        <input type="date" id="appsDate">
+        <button class="btn btn-ghost btn-sm" onclick="loadAppUsage()">Load</button>
+      </div>
+      <div class="app-usage-grid" id="appUsageGrid"></div>
+    </div>
+
+    <!-- Activity Timeline (manager) -->
+    <div class="page" id="pgTimeline">
+      <div class="page-header"><div><div class="page-title">Activity Timeline</div><div class="page-sub">Active vs idle throughout the day</div></div></div>
+      <div class="date-bar">
+        <label style="margin:0">Date</label>
+        <input type="date" id="tlDate">
+        <button class="btn btn-ghost btn-sm" onclick="loadTimeline()">Load</button>
+      </div>
+      <div class="card">
+        <div class="timeline-wrap" id="tlWrap">
+          <div class="empty"><div class="ei">📊</div><p>Select a date and click Load</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screenshots (manager) -->
+    <div class="page" id="pgShots">
+      <div class="page-header"><div><div class="page-title">Screenshots</div><div class="page-sub">Captured every 15 minutes</div></div></div>
+      <div class="date-bar">
+        <label style="margin:0">Date</label>
+        <input type="date" id="shotsDate">
+        <label style="margin:0">Employee</label>
+        <select id="shotsEmpFilter"><option value="">All employees</option></select>
+        <button class="btn btn-ghost btn-sm" onclick="loadScreenshots()">Load</button>
+      </div>
+      <div id="shotsContainer"></div>
+    </div>
+
+    <!-- Monitoring Rules (manager) -->
+    <div class="page" id="pgRules">
+      <div class="page-header">
+        <div><div class="page-title">Monitoring Rules</div><div class="page-sub">Classify apps &amp; window titles so off-task time stands out automatically</div></div>
+        <button class="btn btn-ghost btn-sm" title="One click adds a starter list for accounting firms: Xero/SimplePay/PaySpace etc. as work-related, and YouTube/Facebook/Zoho/job sites etc. as red flags. You can edit or remove any of them afterwards." onclick="loadSuggestedRules()">+ Add suggested accounting-firm list</button>
+      </div>
+      <p style="color:var(--dim);margin-bottom:20px;max-width:720px">Wachadoin matches each employee's active window title (app name + page/site title) against the patterns below. <strong>Work-related</strong> matches show green; <strong>red flags</strong> show red on Live Status and App Usage so you can spot social media, side-work on competing software, or job-hunting at a glance. Matching is a simple "contains" check and is not case-sensitive — typing "xero" also matches "Xero" and "MyXeroAccount".</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px">
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--green)">✓ Work-related<span class="info-dot" tabindex="0" data-tip="Add words that appear in the software your staff should be using — e.g. 'xero', 'simplepay', 'sars efiling'. Any window whose app name or title contains one of these shows green as productive time.">i</span></h3>
+          <div class="key-row">
+            <input id="newWorkPattern" type="text" placeholder="e.g. xero, simplepay" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
+            <button class="btn btn-ghost btn-sm" onclick="addRule('work')">Add</button>
+          </div>
+          <div id="workRulesList"></div>
+        </div>
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--red)">⚠ Red flags<span class="info-dot" tabindex="0" data-tip="Add words for things you don't want staff spending work time on — social media, competing accounting software, job-hunting sites. Any matching window shows red and counts toward 'Flagged Now' on Live Status.">i</span></h3>
+          <div class="key-row">
+            <input id="newFlagPattern" type="text" placeholder="e.g. facebook, zoho" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
+            <button class="btn btn-ghost btn-sm" onclick="addRule('redflag')">Add</button>
+          </div>
+          <div id="flagRulesList"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Admin (manager) -->
+    <div class="page" id="pgAdmin">
+      <div class="page-header"><div><div class="page-title">Team Members</div><div class="page-sub">Add and manage employee accounts</div></div></div>
+
+      <!-- Add employee form -->
+      <div class="card" style="max-width:480px;margin-bottom:24px">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Employee</h3>
+        <p style="font-size:12px;color:var(--dim);margin-bottom:2px">This creates their login for the dashboard (in case they ever need it) — the important part for day-to-day tracking is their <strong>Agent Key</strong>, which you'll get in the list below once they're added.</p>
+        <label>Full name</label>
+        <input id="newName"  type="text"  placeholder="Jane Smith">
+        <label>Email address</label>
+        <input id="newEmail" type="email" placeholder="jane@yourcompany.com" title="Used to log into the dashboard. Doesn't need to be their real work email.">
+        <label>Password</label>
+        <input id="newPass"  type="text"  placeholder="Set a temporary password" title="A starting password for their dashboard login — they can use this as-is, it doesn't need to be reset.">
+        <button class="btn btn-primary" style="margin-top:4px" onclick="createEmployee()" title="Creates the account. You'll then see them in Current Employees below, where you can grab their Agent Key.">Add Employee</button>
+        <div class="err-box" id="addErr"></div>
+        <div id="addOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
+      </div>
+
+      <!-- Employee list -->
+      <div class="card">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Current Employees</h3>
+        <p style="margin-bottom:14px">Each employee needs the <strong>Wachadoin Agent</strong> installed on their computer so tracking runs in the background without them logging in every day. Click "Agent Key" for the download links and setup key for their machine. When someone leaves, click <strong>Deactivate</strong> — it cuts off their login and stops the agent immediately, but keeps their past activity on file.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <tbody id="userListBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Help & Guide (manager) -->
+    <div class="page" id="pgHelp">
+      <div class="page-header"><div><div class="page-title">Help &amp; Guide</div><div class="page-sub">What everything does, in plain language</div></div></div>
+
+      <div class="card help-section">
+        <h3>What each page shows you</h3>
+        <div class="help-page-list">
+          <div class="hp-row"><span class="hp-icon">🟢</span><div><strong>Live Status</strong> — who's active, idle, offline, or on a flagged app right now. Refreshes itself every 15 seconds.</div></div>
+          <div class="hp-row"><span class="hp-icon">📱</span><div><strong>App Usage</strong> — for a chosen day, which apps and sites each person spent time in, colour-coded by your Monitoring Rules.</div></div>
+          <div class="hp-row"><span class="hp-icon">📊</span><div><strong>Activity Timeline</strong> — a visual strip of active vs idle stretches through the day, per person.</div></div>
+          <div class="hp-row"><span class="hp-icon">📷</span><div><strong>Screenshots</strong> — the actual captured images, filterable by date and employee. Auto-deleted after 7 days.</div></div>
+          <div class="hp-row"><span class="hp-icon">🚩</span><div><strong>Monitoring Rules</strong> — where you tell Wachadoin which apps/sites count as work vs a red flag. See below for how matching works.</div></div>
+          <div class="hp-row"><span class="hp-icon">👥</span><div><strong>Team Members</strong> — add employees, grab their Agent Key for installing the background agent, and deactivate anyone who's left.</div></div>
+        </div>
+      </div>
+
+      <div class="card help-section">
+        <h3>Onboarding a new employee</h3>
+        <ol>
+          <li>Go to <strong>Team Members</strong> and add them with a name, email, and a temporary password (this is just their dashboard login — most staff never need to use it day-to-day).</li>
+          <li>Click <strong>Agent Key</strong> next to their name. You'll see a download link, a Server URL, and a personal Agent Key.</li>
+          <li>Send those three things to the employee (Slack, email, WhatsApp — whatever's convenient) and have them run the installer on their own computer.</li>
+          <li>The one-time setup screen asks for the Server URL and Agent Key — once they paste those in and click Connect, it's done. The agent then runs quietly every time their computer starts; no daily login, ever.</li>
+          <li>Before switching monitoring on for someone new, make sure they've had the POPIA notice / consent form — see the reminder at the bottom of this page.</li>
+        </ol>
+      </div>
+
+      <div class="card help-section">
+        <h3>Offboarding — when someone leaves</h3>
+        <p>Go to <strong>Team Members</strong> and click <strong>Deactivate</strong> next to their name. This immediately:</p>
+        <ul>
+          <li>blocks their dashboard login, even if they're already logged in;</li>
+          <li>stops the background agent from reporting anything further from their computer;</li>
+          <li>keeps their name and past time/activity records on file — nothing is deleted.</li>
+        </ul>
+        <p>If you ever need their record gone entirely (e.g. a data-erasure request), use <strong>Delete permanently</strong> instead — but that's a one-way door, so Deactivate is the right first move in almost every case. Made a mistake? <strong>Reactivate</strong> restores their access.</p>
+      </div>
+
+      <div class="card help-section">
+        <h3>How Monitoring Rules matching works</h3>
+        <p>Wachadoin checks each employee's currently active window — the app name plus whatever's in its title bar (for a browser, that's usually the page or site name) — against the short words/phrases you've added under <strong>Work-related</strong> and <strong>Red flags</strong>. It's a simple "contains" check, not case-sensitive: adding <strong>xero</strong> matches "Xero – Dashboard — Google Chrome" and would also match anything else with "xero" in it.</p>
+        <p>For an accounting firm, a sensible starting point (or just click "+ Add suggested accounting-firm list" on that page):</p>
+        <ul>
+          <li><strong>Work-related:</strong> xero, simplepay, payspace, caseware, draftworx, pastel, sars efiling, outlook, teams</li>
+          <li><strong>Red flags:</strong> youtube, facebook, instagram, tiktok, zoho, sage — plus job sites like indeed, pnet, linkedin jobs (useful for spotting morale issues early, not just distraction)</li>
+        </ul>
+      </div>
+
+      <div class="card help-section">
+        <h3>Quick answers</h3>
+        <p><strong>Someone shows "Offline" and never changes —</strong> check the agent is actually installed and running on their computer (Team Members → Agent Key has the download links again).</p>
+        <p><strong>How long is data kept? —</strong> screenshots and raw activity delete themselves after 7 days automatically. Time entries and activity summaries are kept until you delete the person's account.</p>
+        <p><strong>Do I need to tell staff about this? —</strong> yes — see the POPIA reminder below.</p>
+      </div>
+
+      <div class="card help-section" style="margin-bottom:0">
+        <h3>POPIA — your legal obligations to staff</h3>
+        <p>Monitoring employees' computers counts as processing their personal information under South Africa's POPIA. You should give written notice, get acknowledgment, and add a monitoring clause to employment contracts before switching this on for someone new.</p>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('popiaModal').classList.add('open')">Review the POPIA notice again</button>
+      </div>
+    </div>
+
+    <!-- My Activity (employee) -->
+    <div class="page" id="pgMine">
+      <div class="page-header"><div><div class="page-title">My Activity</div><div class="page-sub">Your activity log</div></div></div>
+      <div class="date-bar">
+        <label style="margin:0">Date</label>
+        <input type="date" id="mineDate">
+        <button class="btn btn-ghost btn-sm" onclick="loadMyActivity()">Load</button>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <table>
+          <thead><tr><th>Time</th><th>Activity Score</th><th>Status</th></tr></thead>
+          <tbody id="mineBody"></tbody>
+        </table>
+      </div>
+      <div class="card" style="max-width:480px">
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">Background Agent</h3>
+        <p style="font-size:13px;color:var(--dim);margin-bottom:14px">Install the Wachadoin Agent once on your computer and it runs automatically from then on — no daily login needed.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent-Setup.exe" target="_blank" rel="noopener">⊞ Download for Windows</a>
+          <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent.dmg" target="_blank" rel="noopener">⌘ Download for Mac</a>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="openAgentKeyModal(me.id, me.name)">Get My Agent Key</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="closeLb()">
+  <button class="close-lb" onclick="closeLb()">✕</button>
+  <img id="lbImg" src="" alt="Screenshot">
+</div>
+
+<!-- Agent Key modal -->
+<div class="modal-overlay" id="agentKeyModal">
+  <div class="modal-box">
+    <h2 id="akTitle">Agent setup key</h2>
+    <p>Send this person these three things — download link, server URL, and agent key — and have them run the installer on their own Windows or Mac computer. After the one-time setup screen, it starts automatically every time the computer turns on; no login required.</p>
+    <h3>Step 1 — Download<span class="info-dot" tabindex="0" data-tip="Pick the one matching this person's computer. Not sure? Windows laptops use the .exe, Apple/Mac laptops use the .dmg.">i</span></h3>
+    <div class="modal-actions" style="justify-content:flex-start;gap:8px;margin:8px 0 18px">
+      <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent-Setup.exe" target="_blank" rel="noopener" title="For Windows laptops/PCs">⊞ Windows (.exe)</a>
+      <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent.dmg" target="_blank" rel="noopener" title="For Apple Mac laptops/desktops">⌘ Mac (.dmg)</a>
+    </div>
+    <h3>Step 2 — Server URL<span class="info-dot" tabindex="0" data-tip="This is filled in automatically — it's the address of your Wachadoin dashboard. Just copy and send it as-is.">i</span></h3>
+    <div class="key-row">
+      <div class="key-field" id="akServerUrl">—</div>
+      <button class="btn btn-ghost btn-sm" title="Copy to clipboard" onclick="copyField('akServerUrl')">Copy</button>
+    </div>
+    <h3>Step 3 — Agent Key<span class="info-dot" tabindex="0" data-tip="A private code unique to this person, starting with 'wag_'. It's how the agent identifies who it's reporting for — think of it like a password just for their computer.">i</span></h3>
+    <div class="key-row">
+      <div class="key-field" id="akToken">—</div>
+      <button class="btn btn-ghost btn-sm" title="Copy to clipboard" onclick="copyField('akToken')">Copy</button>
+    </div>
+    <p style="font-size:12px">Keep this key private — anyone with it can post activity data as this person. If a laptop is lost or someone leaves, deactivate them from the Team Members list (or regenerate the key below) to disable the old one immediately.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" title="Creates a brand-new key and disables the old one immediately — use this if a laptop is lost, stolen, or someone leaves. You'll need to give this person the new key before their agent can report again." onclick="regenerateAgentKey()">Regenerate key</button>
+      <button class="btn btn-primary" style="width:auto" onclick="closeAgentKeyModal()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- POPIA onboarding notice (managers, shown once) -->
+<div class="modal-overlay" id="popiaModal">
+  <div class="modal-box">
+    <h2>Before you start monitoring staff</h2>
+    <p>Wachadoin captures screenshots, active-window titles, and activity levels from employees' computers. Under South Africa's Protection of Personal Information Act (POPIA), this counts as processing employees' personal information, so a few things need to be in place before you switch it on:</p>
+    <h3>1. Tell your employees</h3>
+    <p>Give each employee written notice of what's monitored (screenshots, app/window titles, idle time), why, who can see it, and how long it's kept. Have them sign an acknowledgment.</p>
+    <h3>2. Update employment contracts</h3>
+    <p>Add a monitoring clause to new and existing employment contracts so consent is documented on file, not just a one-off form.</p>
+    <h3>3. Limit and secure the data</h3>
+    <p>Only collect what you need for legitimate work-performance purposes, restrict dashboard access to managers who need it, and don't repurpose screenshots for anything unrelated to work performance.</p>
+    <p style="margin-top:14px">Acute Accountants can provide a staff consent form and suggested contract clauses to get this in place — this notice isn't legal advice, so have a lawyer review the final wording for your business.</p>
+    <div class="modal-actions">
+      <button class="btn btn-primary" style="width:auto" onclick="ackPopia()">I understand — continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const API = '';
+let token = localStorage.getItem('wToken') || '';
+let me    = JSON.parse(localStorage.getItem('wUser') || 'null');
+let statusTimer = null;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function api(path, opts) {
+  return fetch(path, { headers: { Authorization: `Bearer ${token}` }, ...opts }).then(r => r.json());
+}
+
+function todayStr() {
+  const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().split('T')[0];
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+}
+
+function fmtAgo(iso) {
+  if (!iso) return 'Never';
+  const diff = Math.round((Date.now() - new Date(iso)) / 1000);
+  if (diff < 5)    return 'Just now';
+  if (diff < 60)   return `${diff}s ago`;
+  if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+  return `${Math.round(diff/3600)}h ago`;
+}
+
+function initials(name) {
+  return (name || '?').split(' ').slice(0,2).map(w => w[0]).join('').toUpperCase();
+}
+
+function scoreColor(s) {
+  if (s == null) return 'var(--muted)';
+  if (s >= 70) return 'var(--green)';
+  if (s >= 40) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+document.getElementById('btnLogin').addEventListener('click', async () => {
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass  = document.getElementById('loginPass').value;
+  const err   = document.getElementById('loginErr');
+  const btn   = document.getElementById('btnLogin');
+  err.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass }),
+    }).then(r => r.json());
+    if (!r.token) throw new Error(r.error || 'Login failed');
+    token = r.token; me = r.user;
+    localStorage.setItem('wToken', token);
+    localStorage.setItem('wUser', JSON.stringify(me));
+    initApp();
+  } catch (e) {
+    err.textContent = e.message; err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Sign in';
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && document.getElementById('authScreen').style.display !== 'none')
+    document.getElementById('btnLogin').click();
+});
+
+function logout() {
+  token = ''; me = null;
+  localStorage.removeItem('wToken'); localStorage.removeItem('wUser');
+  clearInterval(statusTimer);
+  document.getElementById('appShell').style.display   = 'none';
+  document.getElementById('authScreen').style.display = 'flex';
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+const MANAGER_NAV = [
+  { id:'pgStatus',   icon:'🟢', label:'Live Status',       tip:'Who\'s active, idle, offline, or flagged right now.' },
+  { id:'pgApps',     icon:'📱', label:'App Usage',          tip:'Which apps and sites each employee spent time on.' },
+  { id:'pgTimeline', icon:'📊', label:'Activity Timeline',  tip:'Active vs idle stretches across the day, per employee.' },
+  { id:'pgShots',    icon:'📷', label:'Screenshots',        tip:'Browse captured screenshots by date and employee.' },
+  { id:'pgRules',    icon:'🚩', label:'Monitoring Rules',   tip:'Decide which apps/sites count as work vs a red flag.' },
+  { id:'pgAdmin',    icon:'👥', label:'Team Members',       tip:'Add employees, get their Agent Key, deactivate leavers.' },
+  { id:'pgHelp',     icon:'❓', label:'Help & Guide',       tip:'Plain-language guide to every page, onboarding, and offboarding.' },
+];
+const EMPLOYEE_NAV = [
+  { id:'pgMine', icon:'📊', label:'My Activity' },
+];
+
+function buildNav(items) {
+  document.getElementById('sidebarNav').innerHTML = items.map(n =>
+    `<div class="sb-link" data-page="${n.id}" onclick="showPage('${n.id}')" title="${n.tip || ''}">
+       <span class="icon">${n.icon}</span>${n.label}
+     </div>`).join('');
+}
+
+function showPage(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sb-link').forEach(l => l.classList.remove('active'));
+  document.getElementById(id)?.classList.add('active');
+  document.querySelector(`[data-page="${id}"]`)?.classList.add('active');
+  if (id === 'pgAdmin') loadUserList();
+  if (id === 'pgRules') loadRules();
+}
+
+// ── App init ──────────────────────────────────────────────────────────────────
+function initApp() {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('appShell').style.display   = 'block';
+  document.getElementById('sbName').textContent        = me.name;
+  document.getElementById('sbAvatar').textContent      = initials(me.name);
+
+  const today = todayStr();
+
+  if (me.role === 'manager') {
+    buildNav(MANAGER_NAV);
+    ['appsDate','tlDate','shotsDate'].forEach(id => document.getElementById(id).value = today);
+    showPage('pgStatus');
+    loadStatus();
+    statusTimer = setInterval(loadStatus, 15000);
+    maybeShowPopiaNotice();
+
+    api('/api/users').then(users => {
+      const sel = document.getElementById('shotsEmpFilter');
+      users.filter(u => u.role === 'employee').forEach(u => {
+        const o = document.createElement('option');
+        o.value = u.id; o.textContent = u.name; sel.appendChild(o);
+      });
+    });
+  } else {
+    buildNav(EMPLOYEE_NAV);
+    document.getElementById('mineDate').value = today;
+    showPage('pgMine');
+    loadMyActivity();
+  }
+}
+
+// ── Live Status ───────────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const data = await api('/api/activity/status');
+    renderStatus(data);
+  } catch {}
+}
+
+function renderStatus(employees) {
+  const online   = employees.filter(e => e.online && !e.isIdle).length;
+  const idle     = employees.filter(e => e.online &&  e.isIdle).length;
+  const offline  = employees.filter(e => !e.online).length;
+  const flagged  = employees.filter(e => e.flag === 'redflag').length;
+  const scored   = employees.filter(e => e.activityScore != null);
+  const avgScore = scored.length ? Math.round(scored.reduce((s,e) => s + e.activityScore, 0) / scored.length) : null;
+
+  document.getElementById('statusStats').innerHTML = `
+    <div class="stat-card"><div class="stat-label">Active Now<span class="info-dot" tabindex="0" data-tip="The background agent posted a signal (heartbeat, app, or screenshot) from this computer in the last 5 minutes, and they're not idle.">i</span></div><div class="stat-value" style="color:var(--green)">${online}</div><div class="stat-sub">of ${employees.length} employees</div></div>
+    <div class="stat-card"><div class="stat-label">Idle<span class="info-dot" tabindex="0" data-tip="The agent is running and checking in, but there's been no mouse or keyboard input for 5+ minutes — the computer is on but nobody's using it.">i</span></div><div class="stat-value" style="color:var(--yellow)">${idle}</div><div class="stat-sub">inactive 5+ min</div></div>
+    <div class="stat-card"><div class="stat-label">Offline<span class="info-dot" tabindex="0" data-tip="No signal at all recently. Usually means the computer is off or asleep — but if this never changes for someone, check whether the Wachadoin Agent is actually installed and running on their machine.">i</span></div><div class="stat-value" style="color:var(--muted)">${offline}</div><div class="stat-sub">no recent signal</div></div>
+    <div class="stat-card"><div class="stat-label">⚠ Flagged Now<span class="info-dot" tabindex="0" data-tip="Their currently-active window matches one of your Red Flag Monitoring Rules (e.g. social media, competitor software, job sites). Set these up on the Monitoring Rules page.">i</span></div><div class="stat-value" style="color:var(--red)">${flagged}</div><div class="stat-sub">on a red-flag app/site</div></div>
+    <div class="stat-card"><div class="stat-label">Avg Activity Score<span class="info-dot" tabindex="0" data-tip="Average percentage of time actively typing/clicking vs sitting idle, across employees who are currently online. It's a rough attentiveness gauge, not a productivity or quality score.">i</span></div><div class="stat-value" style="color:${scoreColor(avgScore)}">${avgScore != null ? avgScore + '%' : '—'}</div><div class="stat-sub">active employees</div></div>
+  `;
+
+  document.getElementById('empGrid').innerHTML = employees.map(e => {
+    const isFlagged = e.flag === 'redflag';
+    const cls      = (e.online ? (e.isIdle ? 'idle' : 'online') : 'offline') + (isFlagged ? ' flagged' : '');
+    const dotCls   = e.online ? (e.isIdle ? 'dot-yellow' : 'dot-green') : 'dot-gray';
+    const pillCls  = e.online ? (e.isIdle ? 'pill-yellow' : 'pill-green') : 'pill-gray';
+    const label    = e.online ? (e.isIdle ? 'Idle' : 'Active') : 'Offline';
+    const score    = e.activityScore ?? 0;
+    const barColor = scoreColor(e.activityScore);
+    const appColor = e.flag === 'redflag' ? 'var(--red)' : e.flag === 'work' ? 'var(--green)' : 'var(--dim)';
+    const appLine  = e.activeApp ? `🖥 <span style="color:${appColor}">${e.activeApp}${e.activeTitle ? ' — ' + e.activeTitle.slice(0,50) : ''}</span>` : 'No app data';
+    return `
+    <div class="emp-card ${cls}">
+      <div class="emp-header">
+        <div class="emp-avatar">${initials(e.userName)}</div>
+        <div class="emp-info">
+          <div class="emp-name">${e.userName}</div>
+          <div class="emp-email">${e.email}</div>
+        </div>
+        <div class="status-dot ${dotCls}"></div>
+      </div>
+      <div class="emp-stats">
+        <div class="emp-stat"><div class="emp-stat-label">Status</div><span class="pill ${pillCls}">${label}</span></div>
+        <div class="emp-stat"><div class="emp-stat-label">Activity</div><div class="emp-stat-value" style="color:${barColor}">${e.activityScore != null ? e.activityScore + '%' : '—'}</div></div>
+      </div>
+      <div class="activity-bar-wrap">
+        <div class="activity-bar-label"><span>Activity score</span><span>${fmtAgo(e.lastSeen)}</span></div>
+        <div class="activity-bar"><div class="activity-bar-fill" style="width:${score}%;background:${barColor}"></div></div>
+      </div>
+      <div class="emp-app">${appLine}</div>
+      ${isFlagged ? `<div class="flag-banner">⚠ Currently on a red-flag app/site</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── App Usage ─────────────────────────────────────────────────────────────────
+async function loadAppUsage() {
+  const date = document.getElementById('appsDate').value || todayStr();
+  const [usage, users] = await Promise.all([
+    api(`/api/activity/appusage?date=${date}`),
+    api('/api/users'),
+  ]);
+  const employees = users.filter(u => u.role === 'employee');
+  const grid = document.getElementById('appUsageGrid');
+  if (!usage.length) {
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="ei">📱</div><p>No app data for ${date}</p></div>`;
+    return;
+  }
+  grid.innerHTML = employees.map(emp => {
+    const rows = usage.filter(r => r.userId === emp.id).sort((a,b) => b.count - a.count).slice(0,10);
+    if (!rows.length) return '';
+    const max = rows[0].count;
+    return `<div class="app-usage-card"><h3>${emp.name}</h3>${rows.map(r => {
+      const barColor = r.category === 'redflag' ? 'var(--red)' : r.category === 'work' ? 'var(--green)' : 'var(--primary)';
+      const flagIcon = r.category === 'redflag' ? '⚠ ' : '';
+      return `<div class="app-row">
+         <div class="app-name" title="${r.appName}">${flagIcon}${r.appName}</div>
+         <div class="app-bar" style="flex:1"><div class="app-bar-fill" style="width:${Math.round(r.count/max*100)}%;background:${barColor}"></div></div>
+         <div class="app-count">${r.count}×</div>
+       </div>`;
+    }).join('')}</div>`;
+  }).join('');
+}
+
+// ── Activity Timeline ─────────────────────────────────────────────────────────
+async function loadTimeline() {
+  const date = document.getElementById('tlDate').value || todayStr();
+  const [logs, users] = await Promise.all([
+    api(`/api/activity/logs?date=${date}`),
+    api('/api/users'),
+  ]);
+  const wrap = document.getElementById('tlWrap');
+  const employees = users.filter(u => u.role === 'employee');
+  if (!logs.length) {
+    wrap.innerHTML = `<div class="empty"><div class="ei">📊</div><p>No data for ${date}</p></div>`;
+    return;
+  }
+
+  const START_H = 7, END_H = 20, TOTAL_MINS = (END_H - START_H) * 60;
+  const hours = [];
+  for (let h = START_H; h <= END_H; h++) hours.push(h > 12 ? `${h-12}pm` : h === 12 ? '12pm' : `${h}am`);
+
+  const rows = employees.map(emp => {
+    const empLogs = logs.filter(l => l.userId === emp.id).sort((a,b) => new Date(a.ts)-new Date(b.ts));
+    if (!empLogs.length) return '';
+    const segs = empLogs.map(l => {
+      const t    = new Date(l.ts);
+      const mins = (t.getHours() - START_H) * 60 + t.getMinutes();
+      const pct  = Math.max(0, Math.min(100, (mins / TOTAL_MINS) * 100));
+      const w    = (100 / TOTAL_MINS) * 1.5;
+      const cls  = l.isIdle ? 'seg-idle' : 'seg-active';
+      return `<div class="tl-segment ${cls}" style="left:${pct.toFixed(2)}%;width:${w.toFixed(2)}%" title="${fmtTime(l.ts)} — ${l.isIdle ? 'Idle' : 'Active'} (${l.activityScore ?? 0}%)"></div>`;
+    }).join('');
+    return `<div class="tl-row"><div class="tl-label" title="${emp.name}">${emp.name}</div><div class="tl-bar">${segs}</div></div>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="timeline-grid">
+      <div class="tl-hours">${hours.map(h => `<div class="tl-hour">${h}</div>`).join('')}</div>
+      ${rows}
+    </div>
+    <div style="display:flex;gap:16px;margin-top:14px;font-size:12px;color:var(--dim)">
+      <span style="display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--green)"></span> Active</span>
+      <span style="display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--yellow);opacity:.6"></span> Idle</span>
+    </div>`;
+}
+
+// ── Screenshots ──────────────────────────────────────────────────────────────
+async function loadScreenshots() {
+  const date  = document.getElementById('shotsDate').value || todayStr();
+  const empId = document.getElementById('shotsEmpFilter').value;
+  const url   = `/api/activity/screenshots?date=${date}${empId ? '&userId='+empId : ''}`;
+  const [shots, users] = await Promise.all([api(url), api('/api/users')]);
+  const container = document.getElementById('shotsContainer');
+  if (!shots.length) {
+    container.innerHTML = `<div class="empty"><div class="ei">📷</div><p>No screenshots for ${date}</p></div>`;
+    return;
+  }
+  const employees = users.filter(u => u.role === 'employee');
+  const byEmp = {};
+  for (const s of shots) { (byEmp[s.userId] = byEmp[s.userId] || []).push(s); }
+  container.innerHTML = Object.entries(byEmp).map(([uid, empShots]) => {
+    const emp  = employees.find(e => e.id === uid);
+    const name = emp ? emp.name : (empShots[0]?.userName || uid);
+    return `
+    <div class="shots-emp-section">
+      <div class="shots-emp-header">
+        <div class="emp-avatar" style="width:30px;height:30px;font-size:13px">${initials(name)}</div>
+        <div class="shots-emp-name">${name}</div>
+        <span class="pill pill-gray" style="margin-left:auto">${empShots.length} shot${empShots.length!==1?'s':''}</span>
+      </div>
+      <div class="shots-grid">
+        ${empShots.map(s => `
+          <div class="shot-card" onclick="openLb('/api/screenshots/${s.filename}')">
+            <img class="shot-img" src="/api/screenshots/${s.filename}" alt="" loading="lazy">
+            <div class="shot-meta"><span>${fmtTime(s.ts)}</span><span>${s.screenName||'Screen 1'}</span></div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function openLb(src) { document.getElementById('lbImg').src = src; document.getElementById('lightbox').classList.add('open'); }
+function closeLb()   { document.getElementById('lightbox').classList.remove('open'); document.getElementById('lbImg').src = ''; }
+
+// ── My Activity (employee) ───────────────────────────────────────────────────
+async function loadMyActivity() {
+  const date = document.getElementById('mineDate').value || todayStr();
+  const logs = await api(`/api/activity/logs?date=${date}&userId=${me.id}`);
+  const tbody = document.getElementById('mineBody');
+  if (!logs.length) {
+    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:40px">No data for ${date}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = logs.map(l => `
+    <tr>
+      <td>${fmtTime(l.ts)}</td>
+      <td><span style="color:${scoreColor(l.activityScore)};font-weight:700">${l.activityScore??0}%</span></td>
+      <td><span class="pill ${l.isIdle ? 'pill-yellow' : 'pill-green'}">${l.isIdle ? 'Idle' : 'Active'}</span></td>
+    </tr>`).join('');
+}
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+async function loadUserList() {
+  const users = await api('/api/users');
+  const tbody = document.getElementById('userListBody');
+  tbody.innerHTML = users.map(u => {
+    const nameEsc = u.name.replace(/'/g, "\\'");
+    const inactive = u.active === false;
+    const actions = u.role === 'manager'
+      ? ''
+      : inactive
+        ? `<button class="btn btn-ghost btn-sm" title="Restores their login access. If a while has passed or the key was regenerated, get them a fresh Agent Key too." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>
+           <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Removes this person and ALL their historical time/activity records for good. Cannot be undone — Reactivate is almost always what you want instead." onclick="deleteUser('${u.id}','${u.name}')">Delete permanently</button>`
+        : `<button class="btn btn-ghost btn-sm" title="Get the download links, server URL, and personal setup key to install the agent on their computer." onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
+           <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Use this when someone leaves: blocks their login and stops the agent immediately, but keeps their past activity on file." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
+    return `
+    <tr style="${inactive ? 'opacity:.55' : ''}">
+      <td>${u.name}</td>
+      <td style="color:var(--dim)">${u.email}</td>
+      <td><span class="pill ${u.role === 'manager' ? 'pill-green' : 'pill-gray'}">${u.role}</span></td>
+      <td>${inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Login is blocked and the agent has stopped reporting. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Can log in and the background agent can report activity normally.">Active</span>'}</td>
+      <td style="text-align:right;white-space:nowrap">${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Agent key modal ────────────────────────────────────────────────────────────
+let akUserId = null;
+async function openAgentKeyModal(userId, name) {
+  akUserId = userId;
+  document.getElementById('akTitle').textContent = `Agent setup key — ${name}`;
+  document.getElementById('akServerUrl').textContent = '…';
+  document.getElementById('akToken').textContent = '…';
+  document.getElementById('agentKeyModal').classList.add('open');
+  const r = await api(`/api/users/${userId}/agent-token`);
+  if (r.error) { document.getElementById('akToken').textContent = r.error; return; }
+  document.getElementById('akServerUrl').textContent = r.serverUrl;
+  document.getElementById('akToken').textContent = r.agentToken;
+}
+function closeAgentKeyModal() { document.getElementById('agentKeyModal').classList.remove('open'); }
+function copyField(id) {
+  const text = document.getElementById(id).textContent;
+  navigator.clipboard?.writeText(text);
+}
+async function regenerateAgentKey() {
+  if (!akUserId) return;
+  if (!confirm('Regenerate this key? The old key will stop working immediately — the agent will need the new key entered before it can report again.')) return;
+  const r = await fetch(`/api/users/${akUserId}/agent-token/regenerate`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}` },
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  document.getElementById('akServerUrl').textContent = r.serverUrl;
+  document.getElementById('akToken').textContent = r.agentToken;
+}
+
+// ── Monitoring Rules ───────────────────────────────────────────────────────────
+let allRules = [];
+async function loadRules() {
+  allRules = await api('/api/settings/rules');
+  renderRules();
+}
+function renderRules() {
+  const pill = r => `<div class="rule-pill">${r.pattern}<button title="Remove" onclick="removeRule('${r.id}')">✕</button></div>`;
+  document.getElementById('workRulesList').innerHTML = `<div class="rule-list">${allRules.filter(r => r.category === 'work').map(pill).join('') || '<span style="color:var(--muted);font-size:12px">None yet</span>'}</div>`;
+  document.getElementById('flagRulesList').innerHTML = `<div class="rule-list">${allRules.filter(r => r.category === 'redflag').map(pill).join('') || '<span style="color:var(--muted);font-size:12px">None yet</span>'}</div>`;
+}
+async function saveRules() {
+  const r = await fetch('/api/settings/rules', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ rules: allRules.map(({id, pattern, category}) => ({id, pattern, category})) }),
+  }).then(r => r.json());
+  allRules = r; renderRules();
+}
+function addRule(category) {
+  const inputId = category === 'work' ? 'newWorkPattern' : 'newFlagPattern';
+  const input = document.getElementById(inputId);
+  const pattern = input.value.trim();
+  if (!pattern) return;
+  allRules.push({ id: 'tmp' + Date.now(), pattern, category });
+  input.value = '';
+  saveRules();
+}
+function removeRule(id) {
+  allRules = allRules.filter(r => r.id !== id);
+  saveRules();
+}
+async function loadSuggestedRules() {
+  const r = await fetch('/api/settings/rules/suggested', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+  allRules = r; renderRules();
+}
+
+// ── POPIA onboarding notice (managers) ────────────────────────────────────────
+function maybeShowPopiaNotice() {
+  if (me.role === 'manager' && !me.popiaAcknowledgedAt) {
+    document.getElementById('popiaModal').classList.add('open');
+  }
+}
+async function ackPopia() {
+  const r = await fetch('/api/auth/popia-ack', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+  if (r.popiaAcknowledgedAt) {
+    me.popiaAcknowledgedAt = r.popiaAcknowledgedAt;
+    localStorage.setItem('wUser', JSON.stringify(me));
+  }
+  document.getElementById('popiaModal').classList.remove('open');
+}
+
+async function createEmployee() {
+  const name  = document.getElementById('newName').value.trim();
+  const email = document.getElementById('newEmail').value.trim();
+  const pass  = document.getElementById('newPass').value.trim();
+  const err   = document.getElementById('addErr');
+  const ok    = document.getElementById('addOk');
+  err.style.display = 'none'; ok.style.display = 'none';
+
+  if (!name || !email || !pass) { err.textContent = 'All fields required.'; err.style.display = 'block'; return; }
+
+  const r = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ name, email, password: pass, role: 'employee' }),
+  }).then(r => r.json());
+
+  if (r.error) { err.textContent = r.error; err.style.display = 'block'; return; }
+
+  ok.textContent = `✓ ${name} added successfully. They can log in at wachadoin.onrender.com`;
+  ok.style.display = 'block';
+  document.getElementById('newName').value  = '';
+  document.getElementById('newEmail').value = '';
+  document.getElementById('newPass').value  = '';
+  loadUserList();
+}
+
+async function deactivateUser(id, name) {
+  if (!confirm(`Deactivate ${name}? They'll immediately be unable to log in and the background agent will stop reporting. Their past time entries and activity history are kept — use this for staff who've left rather than deleting them outright.`)) return;
+  const r = await fetch(`/api/users/${id}/deactivate`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  loadUserList();
+}
+
+async function reactivateUser(id, name) {
+  if (!confirm(`Reactivate ${name}? They'll be able to log in again. If their old agent key was regenerated or a while has passed, get them the setup info again via "Agent Key".`)) return;
+  const r = await fetch(`/api/users/${id}/reactivate`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  loadUserList();
+}
+
+async function deleteUser(id, name) {
+  if (!confirm(`Permanently delete ${name} and all their historical records? This cannot be undone. If you just need to cut off access, use Deactivate instead.`)) return;
+  const r = await fetch(`/api/users/${id}`, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${token}` },
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  loadUserList();
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+if (token && me) {
+  fetch('/api/users', { headers: { Authorization: `Bearer ${token}` } })
+    .then(r => r.status === 401 ? logout() : initApp())
+    .catch(() => initApp());
+} else {
+  document.getElementById('authScreen').style.display = 'flex';
+}
+</script>
+</body>
+</html>
