@@ -205,12 +205,26 @@ function auth(req, res, next) {
     const db   = loadDB();
     const user = db.users.find(u => u.agentToken === token);
     if (!user) return res.status(401).json({ error: 'Invalid agent token' });
+    // Deactivated staff (e.g. after leaving) stop being able to report activity
+    // immediately, even though their key hasn't been regenerated.
+    if (user.active === false) return res.status(401).json({ error: 'Account deactivated' });
     req.user = { id: user.id, name: user.name, email: user.email, role: user.role, viaAgent: true };
     return next();
   }
 
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Invalid or expired token' }); }
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+  // A web session token stays "valid" for 7 days by design, but if the account was
+  // deactivated mid-session it should be kicked out on its very next request rather
+  // than waiting for the token to expire naturally.
+  const db = loadDB();
+  const u  = db.users.find(x => x.id === req.user.id);
+  if (!u) return res.status(401).json({ error: 'Invalid or expired token' });
+  if (u.active === false) return res.status(401).json({ error: 'Account deactivated' });
+  next();
 }
 function managerOnly(req, res, next) {
   if (req.user?.role !== 'manager') return res.status(403).json({ error: 'Manager access required' });
@@ -240,6 +254,8 @@ app.post('/api/auth/login', async (req, res) => {
   const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
   if (!user || !(await bcrypt.compare(password, user.passwordHash)))
     return res.status(401).json({ error: 'Invalid email or password' });
+  if (user.active === false)
+    return res.status(403).json({ error: 'This account has been deactivated. Contact your manager.' });
   const token = jwt.sign({ id:user.id, name:user.name, email:user.email, role:user.role }, JWT_SECRET, { expiresIn:'7d' });
   res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role, popiaAcknowledgedAt:user.popiaAcknowledgedAt||null } });
 });
@@ -258,7 +274,7 @@ app.post('/api/auth/popia-ack', auth, (req, res) => {
 // ── Users ──────────────────────────────────────────────────────
 app.get('/api/users', auth, managerOnly, (req, res) => {
   const db = loadDB();
-  res.json(db.users.map(u => ({ id:u.id, name:u.name, email:u.email, role:u.role })));
+  res.json(db.users.map(u => ({ id:u.id, name:u.name, email:u.email, role:u.role, active: u.active !== false })));
 });
 
 // GET the Agent setup key for a user — used to install the desktop background agent on
@@ -286,6 +302,38 @@ app.post('/api/users/:id/agent-token/regenerate', auth, (req, res) => {
   res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
 });
 
+// Offboarding — deactivate: the recommended way to remove someone who has left.
+// Blocks their web login and stops the background agent from reporting immediately,
+// but keeps their name and historical time entries / activity summaries on file
+// (useful for an accounting firm's own audit trail, and more in line with POPIA's
+// preference for retaining only what you actually need rather than erasing records
+// that might still matter for a dispute or handover).
+app.post('/api/users/:id/deactivate', auth, managerOnly, (req, res) => {
+  const db   = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.role === 'manager') return res.status(400).json({ error: 'Cannot deactivate a manager account' });
+  user.active = false;
+  user.deactivatedAt = new Date().toISOString();
+  saveDB(db);
+  res.json({ ok: true, active: false });
+});
+
+// Reverse a deactivation, e.g. someone was let go by mistake or has rejoined.
+app.post('/api/users/:id/reactivate', auth, managerOnly, (req, res) => {
+  const db   = loadDB();
+  const user = db.users.find(u => u.id === req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  user.active = true;
+  user.deactivatedAt = null;
+  saveDB(db);
+  res.json({ ok: true, active: true });
+});
+
+// Permanent removal — wipes the account entirely, including the option to ever see
+// their historical entries again. Deactivate is almost always the right first step;
+// use this only when you specifically need the record gone (e.g. a data-erasure
+// request), since it can't be undone the way deactivation can.
 app.delete('/api/users/:id', auth, managerOnly, (req, res) => {
   const db  = loadDB();
   const idx = db.users.findIndex(u => u.id === req.params.id);
