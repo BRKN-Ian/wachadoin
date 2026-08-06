@@ -8,6 +8,13 @@ const jwt     = require('jsonwebtoken');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// Render (and most PaaS hosts) sit behind a reverse proxy that terminates HTTPS and
+// forwards plain HTTP internally, setting an X-Forwarded-Proto header to say so. Without
+// this, req.protocol always reports "http" even though the site is actually served over
+// https — which showed up as an http:// Server URL in the Agent Key modal. Trusting the
+// proxy header fixes req.protocol (and req.secure) to reflect the real public scheme.
+app.set('trust proxy', true);
+
 // Catch all errors early
 process.on('uncaughtException',  err => console.error('[uncaughtException]',  err));
 process.on('unhandledRejection', err => console.error('[unhandledRejection]', err));
