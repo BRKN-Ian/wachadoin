@@ -159,13 +159,34 @@ function classify(db, appName, title) {
 // see an EMPTY team the moment this version deploys (visibleEmployees() filters on
 // managerId, which none of their existing staff would have). Assign every employee
 // missing a managerId to the first manager account found, so nothing goes dark.
+//
+// It also bootstraps the very first Partner/Director account on installations that
+// predate that role. There's deliberately no API path to create the first partner
+// (only an existing partner can add a manager, and only a manager/partner can add
+// anyone at all) — someone has to exist to start that chain. Uses bcrypt's sync API
+// (rather than the async one used elsewhere) so this can stay a plain synchronous
+// function; loadDB() is called synchronously from many places and making it async
+// would ripple through the whole file.
 function migrateHierarchy(db) {
-  const firstManager = db.users.find(u => u.role === 'manager');
-  if (!firstManager) return false;
   let changed = false;
-  for (const u of db.users) {
-    if (u.role === 'employee' && !u.managerId) { u.managerId = firstManager.id; changed = true; }
+
+  const firstManager = db.users.find(u => u.role === 'manager');
+  if (firstManager) {
+    for (const u of db.users) {
+      if (u.role === 'employee' && !u.managerId) { u.managerId = firstManager.id; changed = true; }
+    }
   }
+
+  if (db.users.length > 0 && !db.users.some(u => u.role === 'partner')) {
+    const email    = process.env.PARTNER_EMAIL    || 'director@timetrack.com';
+    const password = process.env.PARTNER_PASSWORD || crypto.randomBytes(6).toString('hex');
+    const passwordHash = bcrypt.hashSync(password, 10);
+    db.users.push({ id: crypto.randomUUID(), name: 'Director', email, passwordHash,
+      role: 'partner', agentToken: genAgentToken(), createdAt: new Date().toISOString() });
+    changed = true;
+    console.log(`[Wachadoin] Bootstrapped a Partner/Director account on first boot with the new role tier — email: ${email}, password: ${password}. This is only logged once; note it down (or set PARTNER_EMAIL/PARTNER_PASSWORD before this first runs to control it yourself).`);
+  }
+
   return changed;
 }
 
