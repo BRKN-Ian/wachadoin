@@ -4,8 +4,12 @@ name: Build Wachadoin Agent installers
 # Mac runners. This can't be done from a Linux machine — Mac builds need a real Mac to
 # produce a .dmg, and while Windows .exe builds can sometimes be cross-compiled with
 # Wine, doing it on an actual Windows runner is far more reliable. Every push that
-# touches the agent/ folder builds both; the finished installers are attached as
-# downloadable build artifacts (see the Actions tab > this run > Artifacts).
+# touches the agent/ folder builds both, then a third job publishes them as a GitHub
+# Release marked "latest" — so the dashboard's download buttons
+# (.../releases/latest/download/WachadoinAgent-Setup.exe and .../WachadoinAgent.dmg)
+# always resolve to the newest build, with a plain public link that needs no GitHub
+# login and never expires (unlike the raw Actions artifacts, which need a login and
+# are deleted after 90 days).
 #
 # To enable: push this repo (or just the agent/ folder) to GitHub, then Actions runs
 # automatically. No secrets or code-signing setup required to get an unsigned installer
@@ -17,6 +21,9 @@ on:
     paths:
       - 'agent/**'
   workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -54,3 +61,27 @@ jobs:
           path: |
             agent/release/*.dmg
             agent/release/*.zip
+
+  publish-release:
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: WachadoinAgent-Windows
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: WachadoinAgent-Mac
+          path: dist
+      - name: Publish as the "latest" GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: agent-build-${{ github.run_number }}
+          name: Wachadoin Agent — build ${{ github.run_number }}
+          make_latest: true
+          files: |
+            dist/*.exe
+            dist/*.dmg
