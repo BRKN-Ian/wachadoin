@@ -424,9 +424,9 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <!-- Employee list -->
       <div class="card">
         <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Current Employees</h3>
-        <p style="margin-bottom:14px">Each employee needs the <strong>Wachadoin Agent</strong> installed on their computer so tracking runs in the background without them logging in every day. Click "Agent Key" to get the setup key for their machine.</p>
+        <p style="margin-bottom:14px">Each employee needs the <strong>Wachadoin Agent</strong> installed on their computer so tracking runs in the background without them logging in every day. Click "Agent Key" for the download links and setup key for their machine. When someone leaves, click <strong>Deactivate</strong> — it cuts off their login and stops the agent immediately, but keeps their past activity on file.</p>
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
           <tbody id="userListBody"></tbody>
         </table>
       </div>
@@ -449,6 +449,10 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <div class="card" style="max-width:480px">
         <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">Background Agent</h3>
         <p style="font-size:13px;color:var(--dim);margin-bottom:14px">Install the Wachadoin Agent once on your computer and it runs automatically from then on — no daily login needed.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent-Setup.exe" target="_blank" rel="noopener">⊞ Download for Windows</a>
+          <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent.dmg" target="_blank" rel="noopener">⌘ Download for Mac</a>
+        </div>
         <button class="btn btn-ghost btn-sm" onclick="openAgentKeyModal(me.id, me.name)">Get My Agent Key</button>
       </div>
     </div>
@@ -466,18 +470,23 @@ tr:hover td { background: rgba(0,194,196,.05); }
 <div class="modal-overlay" id="agentKeyModal">
   <div class="modal-box">
     <h2 id="akTitle">Agent setup key</h2>
-    <p>Install the <strong>Wachadoin Agent</strong> on this person's Windows or Mac computer, then paste these two values into its one-time setup screen. After that it starts automatically every time the computer turns on — no login required.</p>
-    <h3>Server URL</h3>
+    <p>Send this person these three things — download link, server URL, and agent key — and have them run the installer on their own Windows or Mac computer. After the one-time setup screen, it starts automatically every time the computer turns on; no login required.</p>
+    <h3>Step 1 — Download</h3>
+    <div class="modal-actions" style="justify-content:flex-start;gap:8px;margin:8px 0 18px">
+      <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent-Setup.exe" target="_blank" rel="noopener">⊞ Windows (.exe)</a>
+      <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent.dmg" target="_blank" rel="noopener">⌘ Mac (.dmg)</a>
+    </div>
+    <h3>Step 2 — Server URL</h3>
     <div class="key-row">
       <div class="key-field" id="akServerUrl">—</div>
       <button class="btn btn-ghost btn-sm" onclick="copyField('akServerUrl')">Copy</button>
     </div>
-    <h3>Agent Key</h3>
+    <h3>Step 3 — Agent Key</h3>
     <div class="key-row">
       <div class="key-field" id="akToken">—</div>
       <button class="btn btn-ghost btn-sm" onclick="copyField('akToken')">Copy</button>
     </div>
-    <p style="font-size:12px">Keep this key private — anyone with it can post activity data as this person. If a laptop is lost or someone leaves, regenerate the key below to disable the old one.</p>
+    <p style="font-size:12px">Keep this key private — anyone with it can post activity data as this person. If a laptop is lost or someone leaves, deactivate them from the Team Members list (or regenerate the key below) to disable the old one immediately.</p>
     <div class="modal-actions">
       <button class="btn btn-ghost btn-sm" onclick="regenerateAgentKey()">Regenerate key</button>
       <button class="btn btn-primary" style="width:auto" onclick="closeAgentKeyModal()">Done</button>
@@ -834,16 +843,25 @@ async function loadMyActivity() {
 async function loadUserList() {
   const users = await api('/api/users');
   const tbody = document.getElementById('userListBody');
-  tbody.innerHTML = users.map(u => `
-    <tr>
+  tbody.innerHTML = users.map(u => {
+    const nameEsc = u.name.replace(/'/g, "\\'");
+    const inactive = u.active === false;
+    const actions = u.role === 'manager'
+      ? ''
+      : inactive
+        ? `<button class="btn btn-ghost btn-sm" onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>
+           <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" onclick="deleteUser('${u.id}','${u.name}')">Delete permanently</button>`
+        : `<button class="btn btn-ghost btn-sm" onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
+           <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
+    return `
+    <tr style="${inactive ? 'opacity:.55' : ''}">
       <td>${u.name}</td>
       <td style="color:var(--dim)">${u.email}</td>
       <td><span class="pill ${u.role === 'manager' ? 'pill-green' : 'pill-gray'}">${u.role}</span></td>
-      <td style="text-align:right">
-        <button class="btn btn-ghost btn-sm" onclick="openAgentKeyModal('${u.id}','${u.name.replace(/'/g,"\\'")}')">Agent Key</button>
-        ${u.role !== 'manager' ? `<button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" onclick="deleteUser('${u.id}','${u.name}')">Remove</button>` : ''}
-      </td>
-    </tr>`).join('');
+      <td>${inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)">Inactive</span>' : '<span class="pill pill-green">Active</span>'}</td>
+      <td style="text-align:right;white-space:nowrap">${actions}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ── Agent key modal ────────────────────────────────────────────────────────────
@@ -953,8 +971,28 @@ async function createEmployee() {
   loadUserList();
 }
 
+async function deactivateUser(id, name) {
+  if (!confirm(`Deactivate ${name}? They'll immediately be unable to log in and the background agent will stop reporting. Their past time entries and activity history are kept — use this for staff who've left rather than deleting them outright.`)) return;
+  const r = await fetch(`/api/users/${id}/deactivate`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  loadUserList();
+}
+
+async function reactivateUser(id, name) {
+  if (!confirm(`Reactivate ${name}? They'll be able to log in again. If their old agent key was regenerated or a while has passed, get them the setup info again via "Agent Key".`)) return;
+  const r = await fetch(`/api/users/${id}/reactivate`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` },
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  loadUserList();
+}
+
 async function deleteUser(id, name) {
-  if (!confirm(`Remove ${name}? This cannot be undone.`)) return;
+  if (!confirm(`Permanently delete ${name} and all their historical records? This cannot be undone. If you just need to cut off access, use Deactivate instead.`)) return;
   const r = await fetch(`/api/users/${id}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${token}` },
