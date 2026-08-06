@@ -201,6 +201,14 @@ maybeSeed();
 app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// The dashboard/login single-page app lives at public/login.html (not public/index.html —
+// that's now the marketing landing page served automatically at "/"). Express's static
+// middleware only serves login.html at the literal "/login.html" URL, so this route adds
+// the clean "/login" address the landing page's "Sign in" button links to.
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
