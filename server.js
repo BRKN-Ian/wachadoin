@@ -99,46 +99,44 @@ function genAgentToken() {
 // Managers classify apps & window titles (which, for a browser, usually include the
 // page/site title) as "work" or "redflag" so the dashboard can highlight time spent
 // off-task. Matching is a simple case-insensitive substring match against "<appName>
-// <title>". Suggested starter list for a South African accounting firm — editable
-// and fully replaceable per-account from the Monitoring Rules page.
+// <title>". Suggested starter list is deliberately generic — any office/knowledge-work
+// business — and is fully editable/replaceable per-account from the Monitoring Rules page.
 const SUGGESTED_RULES = [
-  // Work-related — accounting/practice tools
-  { pattern: 'xero',            category: 'work' },
-  { pattern: 'simplepay',       category: 'work' },
-  { pattern: 'payspace',        category: 'work' },
-  { pattern: 'caseware',        category: 'work' },
-  { pattern: 'draftworx',       category: 'work' },
-  { pattern: 'pastel',          category: 'work' },
-  { pattern: 'sars efiling',    category: 'work' },
-  { pattern: 'cipc',            category: 'work' },
-  { pattern: 'docfox',          category: 'work' },
-  { pattern: 'outlook',         category: 'work' },
-  { pattern: 'microsoft word',  category: 'work' },
-  { pattern: 'microsoft excel', category: 'work' },
-  { pattern: 'google sheets',   category: 'work' },
-  { pattern: 'google docs',     category: 'work' },
-  { pattern: 'microsoft teams', category: 'work' },
-  { pattern: 'zoom',            category: 'work' },
+  // Work-related — common business/productivity tools
+  { pattern: 'slack',            category: 'work' },
+  { pattern: 'microsoft teams',  category: 'work' },
+  { pattern: 'zoom',             category: 'work' },
+  { pattern: 'google meet',      category: 'work' },
+  { pattern: 'outlook',          category: 'work' },
+  { pattern: 'gmail',            category: 'work' },
+  { pattern: 'microsoft word',   category: 'work' },
+  { pattern: 'microsoft excel',  category: 'work' },
+  { pattern: 'microsoft powerpoint', category: 'work' },
+  { pattern: 'google docs',      category: 'work' },
+  { pattern: 'google sheets',    category: 'work' },
+  { pattern: 'google slides',    category: 'work' },
+  { pattern: 'notion',           category: 'work' },
+  { pattern: 'asana',            category: 'work' },
+  { pattern: 'trello',           category: 'work' },
+  { pattern: 'jira',             category: 'work' },
+  { pattern: 'salesforce',       category: 'work' },
+  { pattern: 'hubspot',          category: 'work' },
+  { pattern: 'figma',            category: 'work' },
+  { pattern: 'github',           category: 'work' },
   // Red flags — social/entertainment
-  { pattern: 'youtube',         category: 'redflag' },
-  { pattern: 'facebook',        category: 'redflag' },
-  { pattern: 'instagram',       category: 'redflag' },
-  { pattern: 'tiktok',          category: 'redflag' },
-  { pattern: 'twitter',         category: 'redflag' },
-  { pattern: 'netflix',         category: 'redflag' },
-  { pattern: 'twitch',          category: 'redflag' },
-  // Red flags — competing/side-work bookkeeping tools (this firm runs on Xero)
-  { pattern: 'zoho',            category: 'redflag' },
-  { pattern: 'sage one',        category: 'redflag' },
-  { pattern: 'sage business cloud', category: 'redflag' },
-  { pattern: 'quickbooks',      category: 'redflag' },
+  { pattern: 'youtube',          category: 'redflag' },
+  { pattern: 'facebook',         category: 'redflag' },
+  { pattern: 'instagram',        category: 'redflag' },
+  { pattern: 'tiktok',           category: 'redflag' },
+  { pattern: 'twitter',          category: 'redflag' },
+  { pattern: 'reddit',           category: 'redflag' },
+  { pattern: 'netflix',          category: 'redflag' },
+  { pattern: 'twitch',           category: 'redflag' },
   // Red flags — job hunting (possible morale/retention issue worth a quiet check-in)
-  { pattern: 'linkedin jobs',   category: 'redflag' },
-  { pattern: 'indeed.co',       category: 'redflag' },
-  { pattern: 'pnet',            category: 'redflag' },
-  { pattern: 'careerjunction',  category: 'redflag' },
-  { pattern: 'careers24',       category: 'redflag' },
-  { pattern: 'gumtree jobs',    category: 'redflag' },
+  { pattern: 'linkedin jobs',    category: 'redflag' },
+  { pattern: 'indeed.com',       category: 'redflag' },
+  { pattern: 'glassdoor',        category: 'redflag' },
+  { pattern: 'ziprecruiter',     category: 'redflag' },
 ];
 
 function ensureRules(db) {
@@ -155,14 +153,33 @@ function classify(db, appName, title) {
 }
 
 // ── DB helpers ─────────────────────────────────────────────────
+// One-time lazy migration for installations that were already running before the
+// Partner/Manager/Employee hierarchy existed. Those employee records predate
+// `managerId`, so without this a manager on an existing deployment would suddenly
+// see an EMPTY team the moment this version deploys (visibleEmployees() filters on
+// managerId, which none of their existing staff would have). Assign every employee
+// missing a managerId to the first manager account found, so nothing goes dark.
+function migrateHierarchy(db) {
+  const firstManager = db.users.find(u => u.role === 'manager');
+  if (!firstManager) return false;
+  let changed = false;
+  for (const u of db.users) {
+    if (u.role === 'employee' && !u.managerId) { u.managerId = firstManager.id; changed = true; }
+  }
+  return changed;
+}
+
 function loadDB() {
   if (!fs.existsSync(DB_FILE)) {
     const blank = { users: [], entries: [] };
     fs.writeFileSync(DB_FILE, JSON.stringify(blank, null, 2));
     return blank;
   }
-  try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
+  let db;
+  try { db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
   catch { return { users: [], entries: [] }; }
+  if (migrateHierarchy(db)) saveDB(db);
+  return db;
 }
 
 function saveDB(data) {
@@ -170,19 +187,24 @@ function saveDB(data) {
 }
 
 // ── Seed demo accounts on first run ───────────────────────────
+// Three tiers: 'partner' (sees every manager and every employee across the whole
+// organization — for firms large enough to have more than one manager), 'manager'
+// (sees only the employees assigned to them via managerId), and 'employee' (no
+// dashboard login at all — tracked only through their Agent Key).
 async function maybeSeed() {
   const db = loadDB();
   if (db.users.length > 0) return;
 
-  const manHash = await bcrypt.hash('admin123', 10);
-  const empHash = await bcrypt.hash('employee123', 10);
-  const today   = new Date().toISOString().split('T')[0];
+  const partnerHash = await bcrypt.hash('director123', 10);
+  const manHash     = await bcrypt.hash('admin123', 10);
+  const today       = new Date().toISOString().split('T')[0];
 
   db.users = [
-    { id:'u1', name:'Admin Manager',  email:'admin@timetrack.com',  passwordHash:manHash, role:'manager',  agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u2', name:'Sarah Johnson',  email:'sarah@timetrack.com',  passwordHash:empHash, role:'employee', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u3', name:'Marcus Chen',    email:'marcus@timetrack.com', passwordHash:empHash, role:'employee', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u4', name:'Tom Walker',     email:'tom@timetrack.com',    passwordHash:empHash, role:'employee', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u0', name:'Director',       email:'director@timetrack.com', passwordHash:partnerHash, role:'partner',  agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u1', name:'Admin Manager',  email:'admin@timetrack.com',    passwordHash:manHash,     role:'manager',  agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u2', name:'Sarah Johnson',  email:'sarah@timetrack.com',    role:'employee', managerId:'u1', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u3', name:'Marcus Chen',    email:'marcus@timetrack.com',   role:'employee', managerId:'u1', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
+    { id:'u4', name:'Tom Walker',     email:'tom@timetrack.com',      role:'employee', managerId:'u1', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
   ];
   db.entries = [
     { id:'e1', userId:'u2', userName:'Sarah Johnson', project:'Acme Corp – Website Redesign', task:'Frontend Development', startTime:`${today}T08:02:00.000Z`, endTime:`${today}T10:45:00.000Z`, durationMs:9780000,  activityScore:91, screenshotCount:18, status:'completed' },
@@ -193,7 +215,7 @@ async function maybeSeed() {
     { id:'e6', userId:'u4', userName:'Tom Walker',    project:'Gamma Inc – Data Migration',   task:'Testing',              startTime:`${today}T12:00:00.000Z`, endTime:`${today}T15:00:00.000Z`, durationMs:10800000, activityScore:74, screenshotCount:17, status:'completed' },
   ];
   saveDB(db);
-  console.log('[Wachadoin] Demo data ready. Login: admin@timetrack.com / admin123');
+  console.log('[Wachadoin] Demo data ready. Manager login: admin@timetrack.com / admin123. Director (partner) login: director@timetrack.com / director123');
 }
 maybeSeed();
 
@@ -232,6 +254,11 @@ function auth(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
+  // Staff (role 'employee') have no dashboard login at all — they're tracked only via
+  // their wag_ Agent Key, handled above. A web-login JWT should never carry that role;
+  // the only way one could is a token issued before this restriction existed, so reject
+  // it defensively rather than trusting a stale 7-day-old token.
+  if (req.user.role === 'employee') return res.status(403).json({ error: 'Staff accounts do not have dashboard access' });
   // A web session token stays "valid" for 7 days by design, but if the account was
   // deactivated mid-session it should be kicked out on its very next request rather
   // than waiting for the token to expire naturally.
@@ -241,33 +268,104 @@ function auth(req, res, next) {
   if (u.active === false) return res.status(401).json({ error: 'Account deactivated' });
   next();
 }
-function managerOnly(req, res, next) {
-  if (req.user?.role !== 'manager') return res.status(403).json({ error: 'Manager access required' });
+
+// Any logged-in dashboard role (manager or partner) — staff never reach here (see auth()).
+function managerOrAbove(req, res, next) {
+  if (!['manager', 'partner'].includes(req.user?.role)) return res.status(403).json({ error: 'Manager access required' });
+  next();
+}
+function partnerOnly(req, res, next) {
+  if (req.user?.role !== 'partner') return res.status(403).json({ error: 'Partner access required' });
   next();
 }
 
+// Org hierarchy: a partner/director sees every manager and every employee in the
+// organization; a manager sees only the employees assigned to them (employee.managerId).
+function visibleEmployees(db, actor) {
+  const employees = db.users.filter(u => u.role === 'employee');
+  if (actor.role === 'partner') return employees;
+  return employees.filter(e => e.managerId === actor.id);
+}
+function visibleEmployeeIds(db, actor) {
+  return new Set(visibleEmployees(db, actor).map(e => e.id));
+}
+// Can `actor` (manager/partner) view or act on `target`? Partners can manage everyone
+// except other partners (to avoid partners locking each other out). Managers can only
+// manage the employees assigned to them.
+function canManage(actor, target) {
+  if (actor.id === target.id) return true;
+  if (actor.role === 'partner') return target.role !== 'partner';
+  if (actor.role === 'manager') return target.role === 'employee' && target.managerId === actor.id;
+  return false;
+}
+
+// Resolves either a single ?date=YYYY-MM-DD or a ?from=...&to=... range from the query
+// string into a consistent {from, to} pair (inclusive), defaulting to just today. This
+// lets every activity-reporting endpoint support both "one day" and "day/week/month/
+// custom range" views without duplicating the parsing logic.
+function resolveRange(req) {
+  const today = new Date().toISOString().split('T')[0];
+  if (req.query.from || req.query.to) {
+    const from = req.query.from || req.query.to;
+    const to   = req.query.to   || req.query.from;
+    return from <= to ? { from, to } : { from: to, to: from };
+  }
+  const d = req.query.date || today;
+  return { from: d, to: d };
+}
+function tsInRange(ts, from, to) {
+  const day = (ts || '').slice(0, 10);
+  return day >= from && day <= to;
+}
+
 // ── Auth ───────────────────────────────────────────────────────
-app.post('/api/auth/register', async (req, res) => {
-  const { name, email, password, role } = req.body;
-  if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
+// Creates a person in the org. This used to be an open public "register" endpoint (no
+// auth required at all, which meant literally anyone could have created themselves a
+// manager account) — it's now a manager/partner-only admin action, matching how it's
+// actually used from the Team Members page. Staff (role 'employee') never get a
+// password or a login token; they're only ever identified by their Agent Key.
+// Managers can only create employees, auto-assigned to themselves. Partners can create
+// employees (choosing which manager the employee reports to) or new managers.
+app.post('/api/auth/register', auth, managerOrAbove, async (req, res) => {
+  const { name, email, password, role, managerId } = req.body;
+  if (!name || !email) return res.status(400).json({ error: 'Name and email are required' });
   const db = loadDB();
   if (db.users.find(u => u.email.toLowerCase() === email.toLowerCase()))
     return res.status(400).json({ error: 'Email already registered' });
-  const passwordHash = await bcrypt.hash(password, 10);
-  const user = { id: Date.now().toString(), name: name.trim(), email: email.toLowerCase().trim(),
-                 passwordHash, role: role === 'manager' ? 'manager' : 'employee',
-                 agentToken: genAgentToken(), createdAt: new Date().toISOString() };
+
+  const wantsManager = role === 'manager' && req.user.role === 'partner';
+  if (role === 'manager' && req.user.role !== 'partner')
+    return res.status(403).json({ error: 'Only a partner/director can add a manager' });
+  if (wantsManager && !password) return res.status(400).json({ error: 'Password is required for a manager account' });
+
+  let user;
+  if (wantsManager) {
+    const passwordHash = await bcrypt.hash(password, 10);
+    user = { id: crypto.randomUUID(), name: name.trim(), email: email.toLowerCase().trim(),
+             passwordHash, role: 'manager', agentToken: genAgentToken(), createdAt: new Date().toISOString() };
+  } else {
+    // Employee — no password, no login. Managers are auto-assigned to themselves;
+    // partners must say which manager this person reports to.
+    let assignedManagerId = req.user.role === 'manager' ? req.user.id : managerId;
+    const mgr = db.users.find(u => u.id === assignedManagerId && u.role === 'manager');
+    if (!mgr) return res.status(400).json({ error: 'A valid manager must be chosen for this employee' });
+    user = { id: crypto.randomUUID(), name: name.trim(), email: email.toLowerCase().trim(),
+             role: 'employee', managerId: mgr.id, agentToken: genAgentToken(), createdAt: new Date().toISOString() };
+  }
   db.users.push(user);
   saveDB(db);
-  const token = jwt.sign({ id:user.id, name:user.name, email:user.email, role:user.role }, JWT_SECRET, { expiresIn:'7d' });
-  res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role, popiaAcknowledgedAt:user.popiaAcknowledgedAt||null } });
+  res.json({ user: { id:user.id, name:user.name, email:user.email, role:user.role, managerId:user.managerId||null } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   const db   = loadDB();
   const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-  if (!user || !(await bcrypt.compare(password, user.passwordHash)))
+  // Staff never had a password to begin with, so !user.passwordHash catches them too —
+  // but check the role explicitly first so the message is actually helpful to them.
+  if (user && user.role === 'employee')
+    return res.status(403).json({ error: "Staff accounts don't have a dashboard login — ask your manager for your Agent Key instead." });
+  if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash)))
     return res.status(401).json({ error: 'Invalid email or password' });
   if (user.active === false)
     return res.status(403).json({ error: 'This account has been deactivated. Contact your manager.' });
@@ -287,31 +385,43 @@ app.post('/api/auth/popia-ack', auth, (req, res) => {
 });
 
 // ── Users ──────────────────────────────────────────────────────
-app.get('/api/users', auth, managerOnly, (req, res) => {
+// A manager sees themselves and only their own team; a partner sees every manager and
+// every employee in the org (with each employee's managerName resolved, so the Team
+// Members page can group them).
+app.get('/api/users', auth, managerOrAbove, (req, res) => {
   const db = loadDB();
-  res.json(db.users.map(u => ({ id:u.id, name:u.name, email:u.email, role:u.role, active: u.active !== false })));
+  const managers = db.users.filter(u => u.role === 'manager');
+  const mgrName  = id => managers.find(m => m.id === id)?.name || null;
+
+  let visible;
+  if (req.user.role === 'partner') {
+    visible = db.users.filter(u => u.role !== 'partner' || u.id === req.user.id);
+  } else {
+    visible = [req.user, ...visibleEmployees(db, req.user)].map(u => db.users.find(x => x.id === u.id) || u);
+  }
+  res.json(visible.map(u => ({
+    id: u.id, name: u.name, email: u.email, role: u.role, active: u.active !== false,
+    managerId: u.managerId || null, managerName: u.role === 'employee' ? mgrName(u.managerId) : null,
+  })));
 });
 
 // GET the Agent setup key for a user — used to install the desktop background agent on
 // their machine (Windows or Mac) so it can run without them ever logging in day-to-day.
-// A manager can fetch anyone's; an employee can fetch only their own.
-app.get('/api/users/:id/agent-token', auth, (req, res) => {
-  if (req.user.role !== 'manager' && req.user.id !== req.params.id)
-    return res.status(403).json({ error: 'Not allowed' });
+app.get('/api/users/:id/agent-token', auth, managerOrAbove, (req, res) => {
   const db   = loadDB();
   const user = db.users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
   if (!user.agentToken) { user.agentToken = genAgentToken(); saveDB(db); }
   res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
 });
 
 // Regenerate (invalidate + replace) a user's Agent key, e.g. if a laptop is lost/decommissioned.
-app.post('/api/users/:id/agent-token/regenerate', auth, (req, res) => {
-  if (req.user.role !== 'manager' && req.user.id !== req.params.id)
-    return res.status(403).json({ error: 'Not allowed' });
+app.post('/api/users/:id/agent-token/regenerate', auth, managerOrAbove, (req, res) => {
   const db   = loadDB();
   const user = db.users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
   user.agentToken = genAgentToken();
   saveDB(db);
   res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
@@ -320,14 +430,17 @@ app.post('/api/users/:id/agent-token/regenerate', auth, (req, res) => {
 // Offboarding — deactivate: the recommended way to remove someone who has left.
 // Blocks their web login and stops the background agent from reporting immediately,
 // but keeps their name and historical time entries / activity summaries on file
-// (useful for an accounting firm's own audit trail, and more in line with POPIA's
+// (useful for the firm's own audit trail, and more in line with data-privacy laws'
 // preference for retaining only what you actually need rather than erasing records
-// that might still matter for a dispute or handover).
-app.post('/api/users/:id/deactivate', auth, managerOnly, (req, res) => {
+// that might still matter for a dispute or handover). A manager can only deactivate
+// their own staff; a partner can also deactivate managers (but not other partners).
+app.post('/api/users/:id/deactivate', auth, managerOrAbove, (req, res) => {
   const db   = loadDB();
   const user = db.users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (user.role === 'manager') return res.status(400).json({ error: 'Cannot deactivate a manager account' });
+  if (user.role === 'partner') return res.status(400).json({ error: 'Cannot deactivate a partner account' });
+  if (req.user.role === 'manager' && user.role !== 'employee') return res.status(400).json({ error: 'Managers can only deactivate their own staff' });
+  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
   user.active = false;
   user.deactivatedAt = new Date().toISOString();
   saveDB(db);
@@ -335,10 +448,11 @@ app.post('/api/users/:id/deactivate', auth, managerOnly, (req, res) => {
 });
 
 // Reverse a deactivation, e.g. someone was let go by mistake or has rejoined.
-app.post('/api/users/:id/reactivate', auth, managerOnly, (req, res) => {
+app.post('/api/users/:id/reactivate', auth, managerOrAbove, (req, res) => {
   const db   = loadDB();
   const user = db.users.find(u => u.id === req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
   user.active = true;
   user.deactivatedAt = null;
   saveDB(db);
@@ -349,11 +463,14 @@ app.post('/api/users/:id/reactivate', auth, managerOnly, (req, res) => {
 // their historical entries again. Deactivate is almost always the right first step;
 // use this only when you specifically need the record gone (e.g. a data-erasure
 // request), since it can't be undone the way deactivation can.
-app.delete('/api/users/:id', auth, managerOnly, (req, res) => {
+app.delete('/api/users/:id', auth, managerOrAbove, (req, res) => {
   const db  = loadDB();
   const idx = db.users.findIndex(u => u.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'User not found' });
-  if (db.users[idx].role === 'manager') return res.status(400).json({ error: 'Cannot delete a manager account' });
+  const target = db.users[idx];
+  if (target.role === 'partner') return res.status(400).json({ error: 'Cannot delete a partner account' });
+  if (req.user.role === 'manager' && target.role !== 'employee') return res.status(400).json({ error: 'Managers can only remove their own staff' });
+  if (!canManage(req.user, target)) return res.status(403).json({ error: 'Not allowed' });
   db.users.splice(idx, 1);
   saveDB(db);
   res.json({ ok: true });
@@ -402,16 +519,30 @@ app.delete('/api/entries/:id', auth, (req, res) => {
 });
 
 app.get('/api/entries', auth, (req, res) => {
-  const db   = loadDB();
-  const date = req.query.date || new Date().toISOString().split('T')[0];
-  let list   = db.entries.filter(e => e.startTime.startsWith(date));
-  if (req.user.role !== 'manager') list = list.filter(e => e.userId === req.user.id);
+  const db = loadDB();
+  const { from, to } = resolveRange(req);
+  let list = db.entries.filter(e => tsInRange(e.startTime, from, to));
+  if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db, req.user);
+    ids.add(req.user.id);
+    list = list.filter(e => ids.has(e.userId));
+  } else if (req.user.role !== 'partner') {
+    list = list.filter(e => e.userId === req.user.id);
+  }
   res.json(list.sort((a,b) => new Date(b.startTime) - new Date(a.startTime)));
 });
 
-app.get('/api/entries/all', auth, managerOnly, (req, res) => {
+// Every entry visible to the requester, with no date filter — a partner gets the
+// whole org, a manager gets their own team (mirrors the scoping in /api/entries).
+app.get('/api/entries/all', auth, managerOrAbove, (req, res) => {
   const db = loadDB();
-  res.json(db.entries.sort((a,b) => new Date(b.startTime) - new Date(a.startTime)));
+  let list = db.entries;
+  if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db, req.user);
+    ids.add(req.user.id);
+    list = list.filter(e => ids.has(e.userId));
+  }
+  res.json(list.sort((a,b) => new Date(b.startTime) - new Date(a.startTime)));
 });
 
 // ── Screenshots ────────────────────────────────────────────────
@@ -435,7 +566,9 @@ app.post('/api/screenshots', auth, (req, res) => {
 
 app.get('/api/screenshots', auth, (req, res) => {
   try {
-    const db    = loadDB();
+    const db  = loadDB();
+    const ids = req.user.role === 'manager' ? visibleEmployeeIds(db, req.user) : null;
+    if (ids) ids.add(req.user.id);
     const files = fs.readdirSync(SHOTS_DIR).filter(f => f.endsWith('.jpg'))
       .map(f => {
         const parts     = f.replace('.jpg','').split('_');
@@ -445,7 +578,7 @@ app.get('/api/screenshots', auth, (req, res) => {
                  userName: db.users.find(u=>u.id===userId)?.name || 'Unknown',
                  screenNum, screenLabel: `Screen ${screenNum}` };
       })
-      .filter(f => req.user.role === 'manager' || f.userId === req.user.id)
+      .filter(f => req.user.role === 'partner' || (ids ? ids.has(f.userId) : f.userId === req.user.id))
       .sort((a,b) => b.ts - a.ts).slice(0, 50);
     res.json(files);
   } catch { res.json([]); }
@@ -504,8 +637,8 @@ app.post('/api/activity', auth, (req, res) => {
   res.status(400).json({ error: 'Unknown type' });
 });
 
-// GET /api/activity/status — latest status per employee (manager only)
-app.get('/api/activity/status', auth, managerOnly, (req, res) => {
+// GET /api/activity/status — latest status per employee (manager sees own team, partner sees everyone)
+app.get('/api/activity/status', auth, managerOrAbove, (req, res) => {
   const activity = loadActivity();
   const db       = loadDB();
   ensureRules(db);
@@ -522,7 +655,7 @@ app.get('/api/activity/status', auth, managerOnly, (req, res) => {
       latestApp[a.userId] = a;
   }
 
-  const employees = db.users.filter(u => u.role === 'employee');
+  const employees = visibleEmployees(db, req.user);
   res.json(employees.map(u => {
     const hb  = latest[u.id];
     const ap  = latestApp[u.id];
@@ -538,14 +671,14 @@ app.get('/api/activity/status', auth, managerOnly, (req, res) => {
 });
 
 // ── Monitoring rules (manager only) ───────────────────────────────────────────
-app.get('/api/settings/rules', auth, managerOnly, (req, res) => {
+app.get('/api/settings/rules', auth, managerOrAbove, (req, res) => {
   const db = loadDB();
   const changed = ensureRules(db);
   if (changed) saveDB(db);
   res.json(db.rules);
 });
 
-app.put('/api/settings/rules', auth, managerOnly, (req, res) => {
+app.put('/api/settings/rules', auth, managerOrAbove, (req, res) => {
   const { rules } = req.body;
   if (!Array.isArray(rules)) return res.status(400).json({ error: 'rules array required' });
   const db = loadDB();
@@ -556,8 +689,8 @@ app.put('/api/settings/rules', auth, managerOnly, (req, res) => {
   res.json(db.rules);
 });
 
-// Merge in the suggested accounting-firm starter list without wiping custom rules already added
-app.post('/api/settings/rules/suggested', auth, managerOnly, (req, res) => {
+// Merge in the suggested starter list without wiping custom rules already added
+app.post('/api/settings/rules/suggested', auth, managerOrAbove, (req, res) => {
   const db = loadDB();
   ensureRules(db);
   const existing = new Set(db.rules.map(r => r.pattern.toLowerCase()));
@@ -571,23 +704,41 @@ app.post('/api/settings/rules/suggested', auth, managerOnly, (req, res) => {
   res.json(db.rules);
 });
 
-// GET /api/activity/logs?date=YYYY-MM-DD&userId=xxx — heartbeat timeline
-app.get('/api/activity/logs', auth, managerOnly, (req, res) => {
+// GET /api/activity/logs?date=YYYY-MM-DD (or from=&to=)&userId=xxx — heartbeat timeline.
+// Supports both a single day (?date=) and a day/week/month/custom range (?from=&to=).
+app.get('/api/activity/logs', auth, managerOrAbove, (req, res) => {
+  const db  = loadDB();
+  const { from, to } = resolveRange(req);
   const activity = loadActivity();
-  const date     = req.query.date || new Date().toISOString().split('T')[0];
-  let hbs = activity.heartbeats.filter(h => h.ts.startsWith(date));
-  if (req.query.userId) hbs = hbs.filter(h => h.userId === req.query.userId);
+  let hbs = activity.heartbeats.filter(h => tsInRange(h.ts, from, to));
+  if (req.query.userId) {
+    const target = db.users.find(u => u.id === req.query.userId);
+    if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
+      return res.status(403).json({ error: 'Not allowed to view this user' });
+    hbs = hbs.filter(h => h.userId === req.query.userId);
+  } else if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db, req.user);
+    hbs = hbs.filter(h => ids.has(h.userId));
+  }
   res.json(hbs.sort((a, b) => new Date(a.ts) - new Date(b.ts)));
 });
 
-// GET /api/activity/appusage?date=YYYY-MM-DD&userId=xxx — top apps
-app.get('/api/activity/appusage', auth, managerOnly, (req, res) => {
+// GET /api/activity/appusage?date=YYYY-MM-DD (or from=&to=)&userId=xxx — top apps
+app.get('/api/activity/appusage', auth, managerOrAbove, (req, res) => {
   const activity = loadActivity();
   const db       = loadDB();
   ensureRules(db);
-  const date     = req.query.date || new Date().toISOString().split('T')[0];
-  let apps = activity.apps.filter(a => a.ts.startsWith(date));
-  if (req.query.userId) apps = apps.filter(a => a.userId === req.query.userId);
+  const { from, to } = resolveRange(req);
+  let apps = activity.apps.filter(a => tsInRange(a.ts, from, to));
+  if (req.query.userId) {
+    const target = db.users.find(u => u.id === req.query.userId);
+    if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
+      return res.status(403).json({ error: 'Not allowed to view this user' });
+    apps = apps.filter(a => a.userId === req.query.userId);
+  } else if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db, req.user);
+    apps = apps.filter(a => ids.has(a.userId));
+  }
   const counts = {};
   for (const a of apps) {
     const key = `${a.userId}|||${a.appName}`;
@@ -606,12 +757,21 @@ app.get('/api/activity/appusage', auth, managerOnly, (req, res) => {
     .sort((a, b) => b.count - a.count));
 });
 
-// GET /api/activity/screenshots?date=YYYY-MM-DD&userId=xxx — screenshot list
-app.get('/api/activity/screenshots', auth, managerOnly, (req, res) => {
+// GET /api/activity/screenshots?date=YYYY-MM-DD (or from=&to=)&userId=xxx — screenshot list
+app.get('/api/activity/screenshots', auth, managerOrAbove, (req, res) => {
+  const db  = loadDB();
+  const { from, to } = resolveRange(req);
   const activity = loadActivity();
-  const date     = req.query.date || new Date().toISOString().split('T')[0];
-  let shots = activity.screenshots.filter(s => s.ts.startsWith(date));
-  if (req.query.userId) shots = shots.filter(s => s.userId === req.query.userId);
+  let shots = activity.screenshots.filter(s => tsInRange(s.ts, from, to));
+  if (req.query.userId) {
+    const target = db.users.find(u => u.id === req.query.userId);
+    if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
+      return res.status(403).json({ error: 'Not allowed to view this user' });
+    shots = shots.filter(s => s.userId === req.query.userId);
+  } else if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db, req.user);
+    shots = shots.filter(s => ids.has(s.userId));
+  }
   res.json(shots.sort((a, b) => new Date(b.ts) - new Date(a.ts)));
 });
 
