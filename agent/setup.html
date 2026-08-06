@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Wachadoin Agent — Setup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0f172a; color: #e2e8f0; padding: 28px; font-size: 14px;
+  }
+  h1 { font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+  p.sub { color: #94a3b8; font-size: 12px; margin-bottom: 20px; line-height: 1.5; }
+  label { display: block; font-size: 12px; font-weight: 500; color: #94a3b8; margin-bottom: 6px; margin-top: 14px; }
+  input {
+    display: block; width: 100%; padding: 9px 12px; background: #1e293b;
+    border: 1px solid #334155; border-radius: 8px; color: #e2e8f0; font-size: 13px; outline: none;
+  }
+  input:focus { border-color: #6366f1; }
+  button {
+    margin-top: 20px; width: 100%; padding: 11px; border: none; border-radius: 8px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-weight: 600;
+    font-size: 14px; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 12px; display: none; line-height: 1.5; }
+  .msg.err { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
+  .msg.ok  { background: #052e16; border: 1px solid #166534; color: #86efac; }
+  .msg.info { background: #1e293b; border: 1px solid #334155; color: #94a3b8; }
+  .note { margin-top: 18px; font-size: 11px; color: #64748b; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <h1>Connect this computer to Wachadoin</h1>
+  <p class="sub">Ask your manager for the Server URL and Agent Key from the "Team Members" page in the Wachadoin dashboard (each employee has their own Agent Key). Paste them below — this is the only setup step; the agent then runs automatically every time this computer starts, with no login needed.</p>
+
+  <label>Your name (shown to your manager)</label>
+  <input id="employeeName" placeholder="Jane Smith">
+
+  <label>Server URL</label>
+  <input id="serverUrl" placeholder="https://wachadoin.onrender.com">
+
+  <label>Agent Key</label>
+  <input id="agentToken" placeholder="wag_...">
+
+  <div class="msg" id="msgBox"></div>
+
+  <button id="btnSave">Connect &amp; start</button>
+
+  <p class="note">On macOS, the first screenshot will prompt you to grant Screen Recording permission in System Settings — this is required by Apple for any app that captures the screen, and only needs to be granted once.</p>
+
+  <script>
+    const btn = document.getElementById('btnSave');
+    const msgBox = document.getElementById('msgBox');
+
+    function showMsg(text, cls) {
+      msgBox.textContent = text;
+      msgBox.className = 'msg ' + cls;
+      msgBox.style.display = 'block';
+    }
+
+    window.wachadoin.onMessage((text) => showMsg(text, 'info'));
+
+    btn.addEventListener('click', async () => {
+      const serverUrl = document.getElementById('serverUrl').value.trim();
+      const agentToken = document.getElementById('agentToken').value.trim();
+      const employeeName = document.getElementById('employeeName').value.trim();
+
+      if (!serverUrl || !agentToken) {
+        showMsg('Server URL and Agent Key are both required.', 'err');
+        return;
+      }
+
+      btn.disabled = true; btn.textContent = 'Connecting…';
+      const result = await window.wachadoin.save(serverUrl, agentToken, employeeName);
+      if (result.ok) {
+        showMsg('Connected! This window will close and the agent will keep running quietly in the background/tray.', 'ok');
+      } else {
+        showMsg(result.error || 'Could not connect — check the Server URL and Agent Key.', 'err');
+        btn.disabled = false; btn.textContent = 'Connect & start';
+      }
+    });
+  </script>
+</body>
+</html>

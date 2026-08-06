@@ -1,0 +1,68 @@
+{
+  "name": "wachadoin-agent",
+  "version": "1.0.0",
+  "description": "Wachadoin background monitoring agent — runs quietly on an employee's Windows or Mac computer and reports activity to your Wachadoin dashboard.",
+  "main": "main.js",
+  "author": "Acute Accountants Inc",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:all": "electron-builder --win --mac"
+  },
+  "dependencies": {
+    "screenshot-desktop": "^1.15.0"
+  },
+  "devDependencies": {
+    "electron": "^31.3.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "co.za.acuteaccountants.wachadoinagent",
+    "productName": "Wachadoin Agent",
+    "copyright": "Copyright (c) Acute Accountants Inc",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "activeWindow.js",
+      "setup.html",
+      "preload.js",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "artifactName": "WachadoinAgent-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.business",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Not used.",
+        "NSMicrophoneUsageDescription": "Not used."
+      }
+    },
+    "dmg": {
+      "artifactName": "WachadoinAgent-${version}.${ext}"
+    }
+  }
+}
