@@ -218,6 +218,28 @@ input::placeholder { color: var(--muted); }
 select { padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; outline: none; }
 select:focus { border-color: var(--primary); }
 
+/* ── Range bar (day / week / month / custom) ─────────────────────────────────── */
+.range-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.range-presets { display: inline-flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
+.range-btn { background: none; border: none; color: var(--dim); padding: 7px 13px; border-radius: 7px; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .12s, color .12s; }
+.range-btn:hover { color: var(--text); }
+.range-btn.active { background: var(--primary); color: #04222b; font-weight: 700; }
+.range-custom { display: none; align-items: center; gap: 8px; }
+.range-custom.show { display: flex; }
+.range-custom input[type=date] { margin: 0; width: auto; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); }
+.range-label { font-size: 12px; color: var(--dim); }
+
+/* ── Trend chart (inline SVG) ─────────────────────────────────────────────────── */
+.trend-wrap { overflow-x: auto; }
+.trend-bar-group { cursor: default; }
+.trend-bar-group:hover rect { opacity: .8; }
+.trend-axis-label { font-size: 10px; fill: var(--muted); }
+
+/* ── Role badge ────────────────────────────────────────────────────────────────── */
+.role-badge { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 2px 8px; border-radius: 99px; margin-top: 2px; }
+.role-badge.partner { background: rgba(0,194,196,.18); color: var(--primary); }
+.role-badge.manager { background: rgba(148,163,184,.18); color: var(--dim); }
+
 /* ── App usage ───────────────────────────────────────────────────────────────── */
 .app-usage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
 .app-usage-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
@@ -356,7 +378,10 @@ tr:hover td { background: rgba(0,194,196,.05); }
     <div class="sb-footer">
       <div class="sb-user">
         <div class="sb-avatar" id="sbAvatar">?</div>
-        <div class="sb-user-name" id="sbName">—</div>
+        <div>
+          <div class="sb-user-name" id="sbName">—</div>
+          <span class="role-badge" id="sbRoleBadge"></span>
+        </div>
       </div>
       <button class="btn btn-ghost btn-sm" onclick="logout()" style="width:100%;margin-top:6px">Sign out</button>
     </div>
@@ -374,41 +399,78 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <div class="emp-grid"  id="empGrid"></div>
     </div>
 
-    <!-- App Usage (manager) -->
+    <!-- App Usage (manager/partner) -->
     <div class="page" id="pgApps">
-      <div class="page-header"><div><div class="page-title">App Usage</div><div class="page-sub">Applications used per employee</div></div></div>
-      <div class="date-bar">
-        <label style="margin:0">Date</label>
-        <input type="date" id="appsDate">
-        <button class="btn btn-ghost btn-sm" onclick="loadAppUsage()">Load</button>
+      <div class="page-header"><div><div class="page-title">App Usage</div><div class="page-sub">Applications used per employee — view a single day, or a week/month/custom range</div></div></div>
+      <div class="range-bar" id="appsRange">
+        <div class="range-presets">
+          <button class="range-btn active" data-preset="today">Today</button>
+          <button class="range-btn" data-preset="7">7 days</button>
+          <button class="range-btn" data-preset="30">30 days</button>
+          <button class="range-btn" data-preset="90">90 days</button>
+          <button class="range-btn" data-preset="custom">Custom</button>
+        </div>
+        <div class="range-custom">
+          <input type="date" class="range-from"><span class="range-label">to</span><input type="date" class="range-to">
+          <button class="btn btn-ghost btn-sm range-apply">Apply</button>
+        </div>
       </div>
       <div class="app-usage-grid" id="appUsageGrid"></div>
     </div>
 
-    <!-- Activity Timeline (manager) -->
+    <!-- Activity Timeline (manager/partner) -->
     <div class="page" id="pgTimeline">
-      <div class="page-header"><div><div class="page-title">Activity Timeline</div><div class="page-sub">Active vs idle throughout the day</div></div></div>
-      <div class="date-bar">
-        <label style="margin:0">Date</label>
-        <input type="date" id="tlDate">
-        <button class="btn btn-ghost btn-sm" onclick="loadTimeline()">Load</button>
+      <div class="page-header"><div><div class="page-title">Activity Timeline</div><div class="page-sub">Active vs idle time, with day/week/month/custom range views</div></div></div>
+      <div class="range-bar" id="tlRange">
+        <div class="range-presets">
+          <button class="range-btn active" data-preset="today">Today</button>
+          <button class="range-btn" data-preset="7">7 days</button>
+          <button class="range-btn" data-preset="30">30 days</button>
+          <button class="range-btn" data-preset="90">90 days</button>
+          <button class="range-btn" data-preset="custom">Custom</button>
+        </div>
+        <div class="range-custom">
+          <input type="date" class="range-from"><span class="range-label">to</span><input type="date" class="range-to">
+          <button class="btn btn-ghost btn-sm range-apply">Apply</button>
+        </div>
       </div>
-      <div class="card">
+      <div class="stat-grid" id="tlStats"></div>
+      <div class="card" id="tlTrendCard" style="margin-bottom:20px;display:none">
+        <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">Daily tracked hours<span class="info-dot" tabindex="0" data-tip="Total hours logged across all visible employees for each day in the selected range.">i</span></h3>
+        <div class="trend-wrap" id="tlTrendChart"></div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
+        <h3 style="font-size:14px;font-weight:600;margin-bottom:12px">Per-employee summary</h3>
+        <table>
+          <thead><tr><th>Employee</th><th>Tracked hours</th><th>Avg activity score</th><th>Red-flag events</th></tr></thead>
+          <tbody id="tlSummaryBody"></tbody>
+        </table>
+      </div>
+      <div class="card" id="tlHourGridCard">
+        <h3 style="font-size:14px;font-weight:600;margin-bottom:12px" id="tlHourGridTitle">Hour-by-hour — <span id="tlHourGridDate"></span></h3>
         <div class="timeline-wrap" id="tlWrap">
-          <div class="empty"><div class="ei">📊</div><p>Select a date and click Load</p></div>
+          <div class="empty"><div class="ei">📊</div><p>Loading…</p></div>
         </div>
       </div>
     </div>
 
-    <!-- Screenshots (manager) -->
+    <!-- Screenshots (manager/partner) -->
     <div class="page" id="pgShots">
       <div class="page-header"><div><div class="page-title">Screenshots</div><div class="page-sub">Captured every 15 minutes</div></div></div>
-      <div class="date-bar">
-        <label style="margin:0">Date</label>
-        <input type="date" id="shotsDate">
+      <div class="range-bar" id="shotsRange">
+        <div class="range-presets">
+          <button class="range-btn active" data-preset="today">Today</button>
+          <button class="range-btn" data-preset="7">7 days</button>
+          <button class="range-btn" data-preset="30">30 days</button>
+          <button class="range-btn" data-preset="90">90 days</button>
+          <button class="range-btn" data-preset="custom">Custom</button>
+        </div>
+        <div class="range-custom">
+          <input type="date" class="range-from"><span class="range-label">to</span><input type="date" class="range-to">
+          <button class="btn btn-ghost btn-sm range-apply">Apply</button>
+        </div>
         <label style="margin:0">Employee</label>
         <select id="shotsEmpFilter"><option value="">All employees</option></select>
-        <button class="btn btn-ghost btn-sm" onclick="loadScreenshots()">Load</button>
       </div>
       <div id="shotsContainer"></div>
     </div>
@@ -417,22 +479,22 @@ tr:hover td { background: rgba(0,194,196,.05); }
     <div class="page" id="pgRules">
       <div class="page-header">
         <div><div class="page-title">Monitoring Rules</div><div class="page-sub">Classify apps &amp; window titles so off-task time stands out automatically</div></div>
-        <button class="btn btn-ghost btn-sm" title="One click adds a starter list for accounting firms: Xero/SimplePay/PaySpace etc. as work-related, and YouTube/Facebook/Zoho/job sites etc. as red flags. You can edit or remove any of them afterwards." onclick="loadSuggestedRules()">+ Add suggested accounting-firm list</button>
+        <button class="btn btn-ghost btn-sm" title="One click adds a generic starter list: Slack/Teams/Zoom etc. as work-related, and YouTube/Facebook/job sites etc. as red flags. You can edit or remove any of them afterwards." onclick="loadSuggestedRules()">+ Add suggested starter list</button>
       </div>
-      <p style="color:var(--dim);margin-bottom:20px;max-width:720px">Wachadoin matches each employee's active window title (app name + page/site title) against the patterns below. <strong>Work-related</strong> matches show green; <strong>red flags</strong> show red on Live Status and App Usage so you can spot social media, side-work on competing software, or job-hunting at a glance. Matching is a simple "contains" check and is not case-sensitive — typing "xero" also matches "Xero" and "MyXeroAccount".</p>
+      <p style="color:var(--dim);margin-bottom:20px;max-width:720px">Wachadoin matches each employee's active window title (app name + page/site title) against the patterns below. <strong>Work-related</strong> matches show green; <strong>red flags</strong> show red on Live Status and App Usage so you can spot social media, side-work on unrelated software, or job-hunting at a glance. Matching is a simple "contains" check and is not case-sensitive — typing "slack" also matches "Slack" and "MySlackWorkspace".</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px">
         <div class="card">
-          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--green)">✓ Work-related<span class="info-dot" tabindex="0" data-tip="Add words that appear in the software your staff should be using — e.g. 'xero', 'simplepay', 'sars efiling'. Any window whose app name or title contains one of these shows green as productive time.">i</span></h3>
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--green)">✓ Work-related<span class="info-dot" tabindex="0" data-tip="Add words that appear in the software your staff should be using — e.g. 'slack', 'notion', 'salesforce'. Any window whose app name or title contains one of these shows green as productive time.">i</span></h3>
           <div class="key-row">
-            <input id="newWorkPattern" type="text" placeholder="e.g. xero, simplepay" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
+            <input id="newWorkPattern" type="text" placeholder="e.g. slack, notion" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
             <button class="btn btn-ghost btn-sm" onclick="addRule('work')">Add</button>
           </div>
           <div id="workRulesList"></div>
         </div>
         <div class="card">
-          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--red)">⚠ Red flags<span class="info-dot" tabindex="0" data-tip="Add words for things you don't want staff spending work time on — social media, competing accounting software, job-hunting sites. Any matching window shows red and counts toward 'Flagged Now' on Live Status.">i</span></h3>
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--red)">⚠ Red flags<span class="info-dot" tabindex="0" data-tip="Add words for things you don't want staff spending work time on — social media, unrelated software, job-hunting sites. Any matching window shows red and counts toward 'Flagged Now' on Live Status.">i</span></h3>
           <div class="key-row">
-            <input id="newFlagPattern" type="text" placeholder="e.g. facebook, zoho" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
+            <input id="newFlagPattern" type="text" placeholder="e.g. facebook, youtube" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
             <button class="btn btn-ghost btn-sm" onclick="addRule('redflag')">Add</button>
           </div>
           <div id="flagRulesList"></div>
@@ -440,33 +502,49 @@ tr:hover td { background: rgba(0,194,196,.05); }
       </div>
     </div>
 
-    <!-- Admin (manager) -->
+    <!-- Admin (manager/partner) -->
     <div class="page" id="pgAdmin">
-      <div class="page-header"><div><div class="page-title">Team Members</div><div class="page-sub">Add and manage employee accounts</div></div></div>
+      <div class="page-header"><div><div class="page-title">Team Members</div><div class="page-sub">Add and manage employees — and, for partners/directors, managers too</div></div></div>
 
-      <!-- Add employee form -->
-      <div class="card" style="max-width:480px;margin-bottom:24px">
-        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Employee</h3>
-        <p style="font-size:12px;color:var(--dim);margin-bottom:2px">This creates their login for the dashboard (in case they ever need it) — the important part for day-to-day tracking is their <strong>Agent Key</strong>, which you'll get in the list below once they're added.</p>
-        <label>Full name</label>
-        <input id="newName"  type="text"  placeholder="Jane Smith">
-        <label>Email address</label>
-        <input id="newEmail" type="email" placeholder="jane@yourcompany.com" title="Used to log into the dashboard. Doesn't need to be their real work email.">
-        <label>Password</label>
-        <input id="newPass"  type="text"  placeholder="Set a temporary password" title="A starting password for their dashboard login — they can use this as-is, it doesn't need to be reset.">
-        <button class="btn btn-primary" style="margin-top:4px" onclick="createEmployee()" title="Creates the account. You'll then see them in Current Employees below, where you can grab their Agent Key.">Add Employee</button>
-        <div class="err-box" id="addErr"></div>
-        <div id="addOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:20px;margin-bottom:24px">
+        <!-- Add employee form -->
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Employee</h3>
+          <p style="font-size:12px;color:var(--dim);margin-bottom:2px">Staff never log in to the dashboard — they're tracked only through their <strong>Agent Key</strong>, which you'll get in the list below once they're added.</p>
+          <label>Full name</label>
+          <input id="newName"  type="text"  placeholder="Jane Smith">
+          <label>Email address</label>
+          <input id="newEmail" type="email" placeholder="jane@yourcompany.com" title="Just used to identify the employee — they never log in with it.">
+          <div id="newEmpManagerWrap" style="display:none">
+            <label>Reports to</label>
+            <select id="newEmpManager" style="margin-bottom:14px"></select>
+          </div>
+          <button class="btn btn-primary" style="margin-top:4px" onclick="createEmployee()" title="Creates the account. You'll then see them in the list below, where you can grab their Agent Key.">Add Employee</button>
+          <div class="err-box" id="addErr"></div>
+          <div id="addOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
+        </div>
+
+        <!-- Add manager form (partner/director only) -->
+        <div class="card" id="addManagerCard" style="display:none">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Manager</h3>
+          <p style="font-size:12px;color:var(--dim);margin-bottom:2px">Managers log in to the dashboard and see the employees assigned to them.</p>
+          <label>Full name</label>
+          <input id="newMgrName"  type="text"  placeholder="Jane Smith">
+          <label>Email address</label>
+          <input id="newMgrEmail" type="email" placeholder="jane@yourcompany.com">
+          <label>Password</label>
+          <input id="newMgrPass"  type="text"  placeholder="Set a temporary password" title="Their starting dashboard login password.">
+          <button class="btn btn-primary" style="margin-top:4px" onclick="createManager()">Add Manager</button>
+          <div class="err-box" id="addMgrErr"></div>
+          <div id="addMgrOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
+        </div>
       </div>
 
-      <!-- Employee list -->
+      <!-- User list -->
       <div class="card">
-        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Current Employees</h3>
-        <p style="margin-bottom:14px">Each employee needs the <strong>Wachadoin Agent</strong> installed on their computer so tracking runs in the background without them logging in every day. Click "Agent Key" for the download links and setup key for their machine. When someone leaves, click <strong>Deactivate</strong> — it cuts off their login and stops the agent immediately, but keeps their past activity on file.</p>
-        <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
-          <tbody id="userListBody"></tbody>
-        </table>
+        <h3 style="font-size:15px;font-weight:600;margin-bottom:16px" id="userListTitle">Current Employees</h3>
+        <p style="margin-bottom:14px">Each employee needs the <strong>Wachadoin Agent</strong> installed on their computer so tracking runs in the background — no login required, ever. Click "Agent Key" for the download links and setup key for their machine. When someone leaves, click <strong>Deactivate</strong> — it cuts off access and stops the agent immediately, but keeps their past activity on file.</p>
+        <div id="userListGroups"></div>
       </div>
     </div>
 
@@ -478,22 +556,22 @@ tr:hover td { background: rgba(0,194,196,.05); }
         <h3>What each page shows you</h3>
         <div class="help-page-list">
           <div class="hp-row"><span class="hp-icon">🟢</span><div><strong>Live Status</strong> — who's active, idle, offline, or on a flagged app right now. Refreshes itself every 15 seconds.</div></div>
-          <div class="hp-row"><span class="hp-icon">📱</span><div><strong>App Usage</strong> — for a chosen day, which apps and sites each person spent time in, colour-coded by your Monitoring Rules.</div></div>
-          <div class="hp-row"><span class="hp-icon">📊</span><div><strong>Activity Timeline</strong> — a visual strip of active vs idle stretches through the day, per person.</div></div>
-          <div class="hp-row"><span class="hp-icon">📷</span><div><strong>Screenshots</strong> — the actual captured images, filterable by date and employee. Auto-deleted after 7 days.</div></div>
+          <div class="hp-row"><span class="hp-icon">📱</span><div><strong>App Usage</strong> — which apps and sites each person spent time in, for a single day or any day/week/month/custom range, colour-coded by your Monitoring Rules.</div></div>
+          <div class="hp-row"><span class="hp-icon">📊</span><div><strong>Activity Timeline</strong> — active-vs-idle detail for a single day, plus tracked-hours totals, an activity-score summary, and a daily trend across any range.</div></div>
+          <div class="hp-row"><span class="hp-icon">📷</span><div><strong>Screenshots</strong> — the actual captured images, filterable by date range and employee. Auto-deleted after 7 days.</div></div>
           <div class="hp-row"><span class="hp-icon">🚩</span><div><strong>Monitoring Rules</strong> — where you tell Wachadoin which apps/sites count as work vs a red flag. See below for how matching works.</div></div>
-          <div class="hp-row"><span class="hp-icon">👥</span><div><strong>Team Members</strong> — add employees, grab their Agent Key for installing the background agent, and deactivate anyone who's left.</div></div>
+          <div class="hp-row"><span class="hp-icon">👥</span><div><strong>Team Members</strong> — add employees (and, for partners/directors, managers), grab Agent Keys, and deactivate anyone who's left.</div></div>
         </div>
       </div>
 
       <div class="card help-section">
         <h3>Onboarding a new employee</h3>
         <ol>
-          <li>Go to <strong>Team Members</strong> and add them with a name, email, and a temporary password (this is just their dashboard login — most staff never need to use it day-to-day).</li>
+          <li>Go to <strong>Team Members</strong> and add them with a name and email. Staff never get a dashboard password — they're identified only by their Agent Key.</li>
           <li>Click <strong>Agent Key</strong> next to their name. You'll see a download link, a Server URL, and a personal Agent Key.</li>
           <li>Send those three things to the employee (Slack, email, WhatsApp — whatever's convenient) and have them run the installer on their own computer.</li>
-          <li>The one-time setup screen asks for the Server URL and Agent Key — once they paste those in and click Connect, it's done. The agent then runs quietly every time their computer starts; no daily login, ever.</li>
-          <li>Before switching monitoring on for someone new, make sure they've had the POPIA notice / consent form — see the reminder at the bottom of this page.</li>
+          <li>The one-time setup screen asks for the Server URL and Agent Key — once they paste those in and click Connect, it's done. The agent then runs quietly every time their computer starts; no login, ever.</li>
+          <li>Before switching monitoring on for someone new, make sure they've had a monitoring notice / consent form covering your local privacy law — see the reminder at the bottom of this page.</li>
         </ol>
       </div>
 
@@ -501,7 +579,7 @@ tr:hover td { background: rgba(0,194,196,.05); }
         <h3>Offboarding — when someone leaves</h3>
         <p>Go to <strong>Team Members</strong> and click <strong>Deactivate</strong> next to their name. This immediately:</p>
         <ul>
-          <li>blocks their dashboard login, even if they're already logged in;</li>
+          <li>blocks their access, even if the agent is mid-session;</li>
           <li>stops the background agent from reporting anything further from their computer;</li>
           <li>keeps their name and past time/activity records on file — nothing is deleted.</li>
         </ul>
@@ -510,11 +588,11 @@ tr:hover td { background: rgba(0,194,196,.05); }
 
       <div class="card help-section">
         <h3>How Monitoring Rules matching works</h3>
-        <p>Wachadoin checks each employee's currently active window — the app name plus whatever's in its title bar (for a browser, that's usually the page or site name) — against the short words/phrases you've added under <strong>Work-related</strong> and <strong>Red flags</strong>. It's a simple "contains" check, not case-sensitive: adding <strong>xero</strong> matches "Xero – Dashboard — Google Chrome" and would also match anything else with "xero" in it.</p>
-        <p>For an accounting firm, a sensible starting point (or just click "+ Add suggested accounting-firm list" on that page):</p>
+        <p>Wachadoin checks each employee's currently active window — the app name plus whatever's in its title bar (for a browser, that's usually the page or site name) — against the short words/phrases you've added under <strong>Work-related</strong> and <strong>Red flags</strong>. It's a simple "contains" check, not case-sensitive: adding <strong>slack</strong> matches "Slack | #general — Google Chrome" and would also match anything else with "slack" in it.</p>
+        <p>A sensible starting point for most businesses (or just click "+ Add suggested starter list" on that page):</p>
         <ul>
-          <li><strong>Work-related:</strong> xero, simplepay, payspace, caseware, draftworx, pastel, sars efiling, outlook, teams</li>
-          <li><strong>Red flags:</strong> youtube, facebook, instagram, tiktok, zoho, sage — plus job sites like indeed, pnet, linkedin jobs (useful for spotting morale issues early, not just distraction)</li>
+          <li><strong>Work-related:</strong> slack, microsoft teams, zoom, outlook, notion, asana, salesforce, github</li>
+          <li><strong>Red flags:</strong> youtube, facebook, instagram, tiktok, netflix — plus job sites like indeed, linkedin jobs, glassdoor (useful for spotting morale issues early, not just distraction)</li>
         </ul>
       </div>
 
@@ -522,38 +600,14 @@ tr:hover td { background: rgba(0,194,196,.05); }
         <h3>Quick answers</h3>
         <p><strong>Someone shows "Offline" and never changes —</strong> check the agent is actually installed and running on their computer (Team Members → Agent Key has the download links again).</p>
         <p><strong>How long is data kept? —</strong> screenshots and raw activity delete themselves after 7 days automatically. Time entries and activity summaries are kept until you delete the person's account.</p>
-        <p><strong>Do I need to tell staff about this? —</strong> yes — see the POPIA reminder below.</p>
+        <p><strong>Do I need to tell staff about this? —</strong> yes — see the privacy-law reminder below.</p>
+        <p><strong>What can a partner/director see that a manager can't? —</strong> a manager only sees the employees assigned to them; a partner/director sees every manager and every employee across the whole organization, and can add new managers.</p>
       </div>
 
       <div class="card help-section" style="margin-bottom:0">
-        <h3>POPIA — your legal obligations to staff</h3>
-        <p>Monitoring employees' computers counts as processing their personal information under South Africa's POPIA. You should give written notice, get acknowledgment, and add a monitoring clause to employment contracts before switching this on for someone new.</p>
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('popiaModal').classList.add('open')">Review the POPIA notice again</button>
-      </div>
-    </div>
-
-    <!-- My Activity (employee) -->
-    <div class="page" id="pgMine">
-      <div class="page-header"><div><div class="page-title">My Activity</div><div class="page-sub">Your activity log</div></div></div>
-      <div class="date-bar">
-        <label style="margin:0">Date</label>
-        <input type="date" id="mineDate">
-        <button class="btn btn-ghost btn-sm" onclick="loadMyActivity()">Load</button>
-      </div>
-      <div class="card" style="margin-bottom:20px">
-        <table>
-          <thead><tr><th>Time</th><th>Activity Score</th><th>Status</th></tr></thead>
-          <tbody id="mineBody"></tbody>
-        </table>
-      </div>
-      <div class="card" style="max-width:480px">
-        <h3 style="font-size:15px;font-weight:600;margin-bottom:8px">Background Agent</h3>
-        <p style="font-size:13px;color:var(--dim);margin-bottom:14px">Install the Wachadoin Agent once on your computer and it runs automatically from then on — no daily login needed.</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-          <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent-Setup.exe" target="_blank" rel="noopener">⊞ Download for Windows</a>
-          <a class="btn btn-ghost btn-sm" style="width:auto" href="https://github.com/BRKN-Ian/wachadoin/releases/latest/download/WachadoinAgent.dmg" target="_blank" rel="noopener">⌘ Download for Mac</a>
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="openAgentKeyModal(me.id, me.name)">Get My Agent Key</button>
+        <h3>Your legal obligations to staff</h3>
+        <p>Monitoring employees' computers counts as processing their personal information under most data-privacy laws (for example South Africa's POPIA, or the GDPR in the EU/UK). You should give written notice, get acknowledgment, and add a monitoring clause to employment contracts before switching this on for someone new.</p>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('popiaModal').classList.add('open')">Review the monitoring notice again</button>
       </div>
     </div>
 
@@ -594,18 +648,18 @@ tr:hover td { background: rgba(0,194,196,.05); }
   </div>
 </div>
 
-<!-- POPIA onboarding notice (managers, shown once) -->
+<!-- Monitoring/privacy onboarding notice (dashboard users, shown once) -->
 <div class="modal-overlay" id="popiaModal">
   <div class="modal-box">
     <h2>Before you start monitoring staff</h2>
-    <p>Wachadoin captures screenshots, active-window titles, and activity levels from employees' computers. Under South Africa's Protection of Personal Information Act (POPIA), this counts as processing employees' personal information, so a few things need to be in place before you switch it on:</p>
+    <p>Wachadoin captures screenshots, active-window titles, and activity levels from employees' computers. Under most data-privacy laws (e.g. South Africa's POPIA, the EU/UK GDPR, or similar laws elsewhere), this counts as processing employees' personal information, so a few things need to be in place before you switch it on:</p>
     <h3>1. Tell your employees</h3>
     <p>Give each employee written notice of what's monitored (screenshots, app/window titles, idle time), why, who can see it, and how long it's kept. Have them sign an acknowledgment.</p>
     <h3>2. Update employment contracts</h3>
     <p>Add a monitoring clause to new and existing employment contracts so consent is documented on file, not just a one-off form.</p>
     <h3>3. Limit and secure the data</h3>
-    <p>Only collect what you need for legitimate work-performance purposes, restrict dashboard access to managers who need it, and don't repurpose screenshots for anything unrelated to work performance.</p>
-    <p style="margin-top:14px">Acute Accountants can provide a staff consent form and suggested contract clauses to get this in place — this notice isn't legal advice, so have a lawyer review the final wording for your business.</p>
+    <p>Only collect what you need for legitimate work-performance purposes, restrict dashboard access to managers/partners who need it, and don't repurpose screenshots for anything unrelated to work performance.</p>
+    <p style="margin-top:14px">This notice isn't legal advice — check which specific data-privacy law applies to your business and have a lawyer review the final wording for your contracts and consent forms.</p>
     <div class="modal-actions">
       <button class="btn btn-primary" style="width:auto" onclick="ackPopia()">I understand — continue</button>
     </div>
@@ -691,20 +745,28 @@ function logout() {
   clearInterval(statusTimer);
   document.getElementById('appShell').style.display   = 'none';
   document.getElementById('authScreen').style.display = 'flex';
+  // The sign-in button is disabled + relabeled "Signing in…" for the duration of a login
+  // attempt (see the click handler below), but that state was never reset on a *successful*
+  // login — only on failure. Without this, logging out and back in during the same browser
+  // session left the button permanently stuck disabled. Reset it here too.
+  const btn = document.getElementById('btnLogin');
+  btn.disabled = false; btn.textContent = 'Sign in';
+  document.getElementById('loginEmail').value = '';
+  document.getElementById('loginPass').value  = '';
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
-const MANAGER_NAV = [
+// Same nav for both dashboard roles (manager, partner/director) — staff never log
+// in at all, so there's no separate employee nav any more. What each page actually
+// shows (own team vs whole org) is scoped server-side based on the logged-in role.
+const DASH_NAV = [
   { id:'pgStatus',   icon:'🟢', label:'Live Status',       tip:'Who\'s active, idle, offline, or flagged right now.' },
-  { id:'pgApps',     icon:'📱', label:'App Usage',          tip:'Which apps and sites each employee spent time on.' },
-  { id:'pgTimeline', icon:'📊', label:'Activity Timeline',  tip:'Active vs idle stretches across the day, per employee.' },
-  { id:'pgShots',    icon:'📷', label:'Screenshots',        tip:'Browse captured screenshots by date and employee.' },
+  { id:'pgApps',     icon:'📱', label:'App Usage',          tip:'Which apps and sites each employee spent time on — single day or a range.' },
+  { id:'pgTimeline', icon:'📊', label:'Activity Timeline',  tip:'Active vs idle detail, tracked-hours totals, and trends across any range.' },
+  { id:'pgShots',    icon:'📷', label:'Screenshots',        tip:'Browse captured screenshots by date range and employee.' },
   { id:'pgRules',    icon:'🚩', label:'Monitoring Rules',   tip:'Decide which apps/sites count as work vs a red flag.' },
-  { id:'pgAdmin',    icon:'👥', label:'Team Members',       tip:'Add employees, get their Agent Key, deactivate leavers.' },
+  { id:'pgAdmin',    icon:'👥', label:'Team Members',       tip:'Add employees and managers, get Agent Keys, deactivate leavers.' },
   { id:'pgHelp',     icon:'❓', label:'Help & Guide',       tip:'Plain-language guide to every page, onboarding, and offboarding.' },
-];
-const EMPLOYEE_NAV = [
-  { id:'pgMine', icon:'📊', label:'My Activity' },
 ];
 
 function buildNav(items) {
@@ -723,36 +785,95 @@ function showPage(id) {
   if (id === 'pgRules') loadRules();
 }
 
+// ── Date-range bars (day / week / month / custom) ──────────────────────────────
+// Wires up the preset buttons + custom from/to inputs inside a .range-bar element,
+// and calls onChange(from, to) whenever the selection changes. Used by App Usage,
+// Activity Timeline, and Screenshots so all three support the same day/week/month/
+// custom-range views instead of just a single date.
+function initRangeBar(containerId, onChange) {
+  const container  = document.getElementById(containerId);
+  const presets    = container.querySelectorAll('.range-btn');
+  const customWrap = container.querySelector('.range-custom');
+  const fromInput  = container.querySelector('.range-from');
+  const toInput    = container.querySelector('.range-to');
+  const applyBtn   = container.querySelector('.range-apply');
+
+  function applyPresetDays(days) {
+    const to = todayStr();
+    let from = to;
+    if (days > 0) {
+      const d = new Date(); d.setDate(d.getDate() - (days - 1));
+      from = d.toISOString().split('T')[0];
+    }
+    fromInput.value = from; toInput.value = to;
+    onChange(from, to);
+  }
+
+  presets.forEach(btn => btn.addEventListener('click', () => {
+    presets.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const preset = btn.dataset.preset;
+    if (preset === 'custom') {
+      customWrap.classList.add('show');
+      if (!fromInput.value) { fromInput.value = todayStr(); toInput.value = todayStr(); }
+    } else {
+      customWrap.classList.remove('show');
+      applyPresetDays(preset === 'today' ? 0 : parseInt(preset, 10));
+    }
+  }));
+
+  applyBtn.addEventListener('click', () => {
+    let from = fromInput.value || todayStr();
+    let to   = toInput.value   || todayStr();
+    if (from > to) { const t = from; from = to; to = t; }
+    onChange(from, to);
+  });
+
+  applyPresetDays(0); // default to today
+}
+
 // ── App init ──────────────────────────────────────────────────────────────────
 function initApp() {
   document.getElementById('authScreen').style.display = 'none';
   document.getElementById('appShell').style.display   = 'block';
   document.getElementById('sbName').textContent        = me.name;
   document.getElementById('sbAvatar').textContent      = initials(me.name);
+  const badge = document.getElementById('sbRoleBadge');
+  badge.textContent = me.role === 'partner' ? 'Partner / Director' : 'Manager';
+  badge.className   = 'role-badge ' + (me.role === 'partner' ? 'partner' : 'manager');
+  document.getElementById('addManagerCard').style.display = me.role === 'partner' ? 'block' : 'none';
 
-  const today = todayStr();
+  buildNav(DASH_NAV);
+  showPage('pgStatus');
+  loadStatus();
+  statusTimer = setInterval(loadStatus, 15000);
+  maybeShowPopiaNotice();
 
-  if (me.role === 'manager') {
-    buildNav(MANAGER_NAV);
-    ['appsDate','tlDate','shotsDate'].forEach(id => document.getElementById(id).value = today);
-    showPage('pgStatus');
-    loadStatus();
-    statusTimer = setInterval(loadStatus, 15000);
-    maybeShowPopiaNotice();
-
-    api('/api/users').then(users => {
-      const sel = document.getElementById('shotsEmpFilter');
-      users.filter(u => u.role === 'employee').forEach(u => {
-        const o = document.createElement('option');
-        o.value = u.id; o.textContent = u.name; sel.appendChild(o);
-      });
+  api('/api/users').then(users => {
+    const sel = document.getElementById('shotsEmpFilter');
+    sel.innerHTML = '<option value="">All employees</option>';
+    users.filter(u => u.role === 'employee').forEach(u => {
+      const o = document.createElement('option');
+      o.value = u.id; o.textContent = u.name; sel.appendChild(o);
     });
-  } else {
-    buildNav(EMPLOYEE_NAV);
-    document.getElementById('mineDate').value = today;
-    showPage('pgMine');
-    loadMyActivity();
-  }
+    sel.addEventListener('change', () => loadScreenshots(currentShotsRange.from, currentShotsRange.to));
+
+    if (me.role === 'partner') {
+      const mgrSel = document.getElementById('newEmpManager');
+      mgrSel.innerHTML = users.filter(u => u.role === 'manager')
+        .map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+      document.getElementById('newEmpManagerWrap').style.display = 'block';
+    }
+  });
+
+  let currentAppsRange = { from: todayStr(), to: todayStr() };
+  initRangeBar('appsRange', (from, to) => { currentAppsRange = { from, to }; loadAppUsage(from, to); });
+
+  let currentTlRange = { from: todayStr(), to: todayStr() };
+  initRangeBar('tlRange', (from, to) => { currentTlRange = { from, to }; loadTimeline(from, to); });
+
+  let currentShotsRange = { from: todayStr(), to: todayStr() };
+  initRangeBar('shotsRange', (from, to) => { currentShotsRange = { from, to }; loadScreenshots(from, to); });
 }
 
 // ── Live Status ───────────────────────────────────────────────────────────────
@@ -814,16 +935,17 @@ function renderStatus(employees) {
 }
 
 // ── App Usage ─────────────────────────────────────────────────────────────────
-async function loadAppUsage() {
-  const date = document.getElementById('appsDate').value || todayStr();
+async function loadAppUsage(from, to) {
+  from = from || todayStr(); to = to || todayStr();
   const [usage, users] = await Promise.all([
-    api(`/api/activity/appusage?date=${date}`),
+    api(`/api/activity/appusage?from=${from}&to=${to}`),
     api('/api/users'),
   ]);
   const employees = users.filter(u => u.role === 'employee');
   const grid = document.getElementById('appUsageGrid');
+  const rangeLabel = from === to ? from : `${from} → ${to}`;
   if (!usage.length) {
-    grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="ei">📱</div><p>No app data for ${date}</p></div>`;
+    grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="ei">📱</div><p>No app data for ${rangeLabel}</p></div>`;
     return;
   }
   grid.innerHTML = employees.map(emp => {
@@ -843,16 +965,108 @@ async function loadAppUsage() {
 }
 
 // ── Activity Timeline ─────────────────────────────────────────────────────────
-async function loadTimeline() {
-  const date = document.getElementById('tlDate').value || todayStr();
-  const [logs, users] = await Promise.all([
-    api(`/api/activity/logs?date=${date}`),
+// Supports both a single day (hour-by-hour detail, as before) and a week/month/
+// custom range (summary stats + a daily trend chart + a per-employee table).
+async function loadTimeline(from, to) {
+  from = from || todayStr(); to = to || todayStr();
+  const isSingleDay = from === to;
+
+  const [logs, entries, usage, users] = await Promise.all([
+    api(`/api/activity/logs?from=${from}&to=${to}`),
+    api(`/api/entries?from=${from}&to=${to}`),
+    api(`/api/activity/appusage?from=${from}&to=${to}`),
     api('/api/users'),
   ]);
-  const wrap = document.getElementById('tlWrap');
   const employees = users.filter(u => u.role === 'employee');
+
+  renderTimelineStats(entries, usage);
+  renderTimelineTrend(entries, from, to, isSingleDay);
+  renderTimelineSummary(employees, entries, usage);
+
+  document.getElementById('tlHourGridCard').style.display = isSingleDay ? 'block' : 'none';
+  if (isSingleDay) {
+    document.getElementById('tlHourGridDate').textContent = from;
+    renderHourGrid(employees, logs);
+  }
+}
+
+function renderTimelineStats(entries, usage) {
+  const totalMs   = entries.reduce((s, e) => s + (e.durationMs || 0), 0);
+  const scored    = entries.filter(e => e.activityScore != null);
+  const avgScore  = scored.length
+    ? Math.round(scored.reduce((s, e) => s + e.activityScore * (e.durationMs || 1), 0) / scored.reduce((s, e) => s + (e.durationMs || 1), 0))
+    : null;
+  const redflagCt = usage.filter(u => u.category === 'redflag').reduce((s, u) => s + u.count, 0);
+
+  document.getElementById('tlStats').innerHTML = `
+    <div class="stat-card"><div class="stat-label">Total Tracked Hours<span class="info-dot" tabindex="0" data-tip="Sum of completed entry durations across all visible employees for the selected range.">i</span></div><div class="stat-value">${(totalMs/3600000).toFixed(1)}</div><div class="stat-sub">hours</div></div>
+    <div class="stat-card"><div class="stat-label">Avg Activity Score<span class="info-dot" tabindex="0" data-tip="Time-weighted average activity score across all tracked entries in the range.">i</span></div><div class="stat-value" style="color:${scoreColor(avgScore)}">${avgScore != null ? avgScore + '%' : '—'}</div><div class="stat-sub">weighted by time</div></div>
+    <div class="stat-card"><div class="stat-label">Red-flag Events<span class="info-dot" tabindex="0" data-tip="Number of logged app/window events that matched a Red Flag rule during the range.">i</span></div><div class="stat-value" style="color:var(--red)">${redflagCt}</div><div class="stat-sub">flagged app/site events</div></div>
+  `;
+}
+
+function renderTimelineTrend(entries, from, to, isSingleDay) {
+  const card = document.getElementById('tlTrendCard');
+  if (isSingleDay) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  const byDay = {};
+  entries.forEach(e => {
+    const day = (e.startTime || '').slice(0, 10);
+    byDay[day] = (byDay[day] || 0) + (e.durationMs || 0);
+  });
+  const days = [];
+  for (let d = new Date(from); d <= new Date(to); d.setDate(d.getDate() + 1)) days.push(d.toISOString().split('T')[0]);
+
+  const hoursPerDay = days.map(d => (byDay[d] || 0) / 3600000);
+  const max = Math.max(1, ...hoursPerDay);
+  const w = Math.max(600, days.length * 34), h = 140, barW = Math.min(24, (w / days.length) - 8);
+
+  const bars = days.map((d, i) => {
+    const x = i * (w / days.length) + ((w / days.length) - barW) / 2;
+    const barH = Math.max(1, (hoursPerDay[i] / max) * (h - 24));
+    const y = h - 24 - barH;
+    const label = d.slice(5); // MM-DD
+    return `<g class="trend-bar-group">
+      <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW}" height="${barH.toFixed(1)}" rx="3" fill="var(--primary)"><title>${d}: ${hoursPerDay[i].toFixed(1)}h</title></rect>
+      <text x="${(x + barW/2).toFixed(1)}" y="${h - 6}" text-anchor="middle" class="trend-axis-label">${label}</text>
+    </g>`;
+  }).join('');
+
+  document.getElementById('tlTrendChart').innerHTML =
+    `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${bars}</svg>`;
+}
+
+function renderTimelineSummary(employees, entries, usage) {
+  const rows = employees.map(emp => {
+    const empEntries = entries.filter(e => e.userId === emp.id);
+    const ms = empEntries.reduce((s, e) => s + (e.durationMs || 0), 0);
+    const scored = empEntries.filter(e => e.activityScore != null);
+    const avg = scored.length
+      ? Math.round(scored.reduce((s, e) => s + e.activityScore * (e.durationMs || 1), 0) / scored.reduce((s, e) => s + (e.durationMs || 1), 0))
+      : null;
+    const redflag = usage.filter(u => u.userId === emp.id && u.category === 'redflag').reduce((s, u) => s + u.count, 0);
+    return { emp, hours: ms / 3600000, avg, redflag };
+  }).filter(r => r.hours > 0 || r.redflag > 0).sort((a, b) => b.hours - a.hours);
+
+  const tbody = document.getElementById('tlSummaryBody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:30px">No tracked activity in this range</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.emp.name}</td>
+      <td>${r.hours.toFixed(1)}h</td>
+      <td><span style="color:${scoreColor(r.avg)};font-weight:700">${r.avg != null ? r.avg + '%' : '—'}</span></td>
+      <td>${r.redflag ? `<span style="color:var(--red);font-weight:600">${r.redflag}</span>` : '0'}</td>
+    </tr>`).join('');
+}
+
+function renderHourGrid(employees, logs) {
+  const wrap = document.getElementById('tlWrap');
   if (!logs.length) {
-    wrap.innerHTML = `<div class="empty"><div class="ei">📊</div><p>No data for ${date}</p></div>`;
+    wrap.innerHTML = `<div class="empty"><div class="ei">📊</div><p>No data for this day</p></div>`;
     return;
   }
 
@@ -886,14 +1100,15 @@ async function loadTimeline() {
 }
 
 // ── Screenshots ──────────────────────────────────────────────────────────────
-async function loadScreenshots() {
-  const date  = document.getElementById('shotsDate').value || todayStr();
+async function loadScreenshots(from, to) {
+  from = from || todayStr(); to = to || todayStr();
   const empId = document.getElementById('shotsEmpFilter').value;
-  const url   = `/api/activity/screenshots?date=${date}${empId ? '&userId='+empId : ''}`;
+  const url   = `/api/activity/screenshots?from=${from}&to=${to}${empId ? '&userId='+empId : ''}`;
   const [shots, users] = await Promise.all([api(url), api('/api/users')]);
   const container = document.getElementById('shotsContainer');
+  const rangeLabel = from === to ? from : `${from} → ${to}`;
   if (!shots.length) {
-    container.innerHTML = `<div class="empty"><div class="ei">📷</div><p>No screenshots for ${date}</p></div>`;
+    container.innerHTML = `<div class="empty"><div class="ei">📷</div><p>No screenshots for ${rangeLabel}</p></div>`;
     return;
   }
   const employees = users.filter(u => u.role === 'employee');
@@ -923,46 +1138,60 @@ async function loadScreenshots() {
 function openLb(src) { document.getElementById('lbImg').src = src; document.getElementById('lightbox').classList.add('open'); }
 function closeLb()   { document.getElementById('lightbox').classList.remove('open'); document.getElementById('lbImg').src = ''; }
 
-// ── My Activity (employee) ───────────────────────────────────────────────────
-async function loadMyActivity() {
-  const date = document.getElementById('mineDate').value || todayStr();
-  const logs = await api(`/api/activity/logs?date=${date}&userId=${me.id}`);
-  const tbody = document.getElementById('mineBody');
-  if (!logs.length) {
-    tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:40px">No data for ${date}</td></tr>`;
-    return;
+// ── Admin ─────────────────────────────────────────────────────────────────────
+// A manager sees a flat list of just their own team. A partner/director sees every
+// manager (who can be managed) plus every employee grouped under their manager, so
+// the org's whole structure is visible at a glance.
+function userRow(u, opts) {
+  const nameEsc = u.name.replace(/'/g, "\\'");
+  const inactive = u.active === false;
+  let actions = '';
+  if (u.role === 'manager') {
+    actions = opts.canManageManagers
+      ? (inactive
+          ? `<button class="btn btn-ghost btn-sm" title="Restores their dashboard login." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>`
+          : `<button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red)" title="Blocks their dashboard login immediately. Their team and history are kept." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`)
+      : '';
+  } else {
+    actions = inactive
+      ? `<button class="btn btn-ghost btn-sm" title="Restores their login access. If a while has passed or the key was regenerated, get them a fresh Agent Key too." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>
+         <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Removes this person and ALL their historical time/activity records for good. Cannot be undone — Reactivate is almost always what you want instead." onclick="deleteUser('${u.id}','${u.name}')">Delete permanently</button>`
+      : `<button class="btn btn-ghost btn-sm" title="Get the download links, server URL, and personal setup key to install the agent on their computer." onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
+         <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Use this when someone leaves: blocks their access and stops the agent immediately, but keeps their past activity on file." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
   }
-  tbody.innerHTML = logs.map(l => `
-    <tr>
-      <td>${fmtTime(l.ts)}</td>
-      <td><span style="color:${scoreColor(l.activityScore)};font-weight:700">${l.activityScore??0}%</span></td>
-      <td><span class="pill ${l.isIdle ? 'pill-yellow' : 'pill-green'}">${l.isIdle ? 'Idle' : 'Active'}</span></td>
-    </tr>`).join('');
+  return `
+  <tr style="${inactive ? 'opacity:.55' : ''}">
+    <td>${u.name}</td>
+    <td style="color:var(--dim)">${u.email}</td>
+    <td><span class="pill ${u.role === 'manager' ? 'pill-green' : 'pill-gray'}">${u.role}</span></td>
+    <td>${inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Access is blocked. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Active — can be tracked / can log in normally.">Active</span>'}</td>
+    <td style="text-align:right;white-space:nowrap">${actions}</td>
+  </tr>`;
 }
 
-// ── Admin ─────────────────────────────────────────────────────────────────────
+function userTable(rows) {
+  return `<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 async function loadUserList() {
   const users = await api('/api/users');
-  const tbody = document.getElementById('userListBody');
-  tbody.innerHTML = users.map(u => {
-    const nameEsc = u.name.replace(/'/g, "\\'");
-    const inactive = u.active === false;
-    const actions = u.role === 'manager'
-      ? ''
-      : inactive
-        ? `<button class="btn btn-ghost btn-sm" title="Restores their login access. If a while has passed or the key was regenerated, get them a fresh Agent Key too." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>
-           <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Removes this person and ALL their historical time/activity records for good. Cannot be undone — Reactivate is almost always what you want instead." onclick="deleteUser('${u.id}','${u.name}')">Delete permanently</button>`
-        : `<button class="btn btn-ghost btn-sm" title="Get the download links, server URL, and personal setup key to install the agent on their computer." onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
-           <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Use this when someone leaves: blocks their login and stops the agent immediately, but keeps their past activity on file." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
-    return `
-    <tr style="${inactive ? 'opacity:.55' : ''}">
-      <td>${u.name}</td>
-      <td style="color:var(--dim)">${u.email}</td>
-      <td><span class="pill ${u.role === 'manager' ? 'pill-green' : 'pill-gray'}">${u.role}</span></td>
-      <td>${inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Login is blocked and the agent has stopped reporting. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Can log in and the background agent can report activity normally.">Active</span>'}</td>
-      <td style="text-align:right;white-space:nowrap">${actions}</td>
-    </tr>`;
-  }).join('');
+  const groupsEl = document.getElementById('userListGroups');
+  document.getElementById('userListTitle').textContent = me.role === 'partner' ? 'Everyone in the organization' : 'Current Employees';
+
+  if (me.role === 'partner') {
+    const managers  = users.filter(u => u.role === 'manager');
+    const employees = users.filter(u => u.role === 'employee');
+    groupsEl.innerHTML = managers.map(mgr => {
+      const team = employees.filter(e => e.managerId === mgr.id);
+      const rows = userRow(mgr, { canManageManagers: true }) + team.map(e => userRow(e, {})).join('');
+      return `<div style="margin-bottom:18px"><h4 style="font-size:13px;color:var(--dim);margin-bottom:8px">Manager: ${mgr.name}${team.length ? ` — ${team.length} employee${team.length!==1?'s':''}` : ' — no employees yet'}</h4>${userTable(rows)}</div>`;
+    }).join('') || `<div class="empty"><div class="ei">👥</div><p>No managers yet — add one above.</p></div>`;
+  } else {
+    const rows = users.filter(u => u.id !== me.id).map(u => userRow(u, {})).join('');
+    groupsEl.innerHTML = rows
+      ? userTable(rows)
+      : `<div class="empty"><div class="ei">👥</div><p>No employees yet — add one above.</p></div>`;
+  }
 }
 
 // ── Agent key modal ────────────────────────────────────────────────────────────
@@ -1031,9 +1260,9 @@ async function loadSuggestedRules() {
   allRules = r; renderRules();
 }
 
-// ── POPIA onboarding notice (managers) ────────────────────────────────────────
+// ── Monitoring/privacy onboarding notice (managers & partners) ────────────────
 function maybeShowPopiaNotice() {
-  if (me.role === 'manager' && !me.popiaAcknowledgedAt) {
+  if (!me.popiaAcknowledgedAt) {
     document.getElementById('popiaModal').classList.add('open');
   }
 }
@@ -1049,9 +1278,35 @@ async function ackPopia() {
 async function createEmployee() {
   const name  = document.getElementById('newName').value.trim();
   const email = document.getElementById('newEmail').value.trim();
-  const pass  = document.getElementById('newPass').value.trim();
+  const managerId = me.role === 'partner' ? document.getElementById('newEmpManager').value : undefined;
   const err   = document.getElementById('addErr');
   const ok    = document.getElementById('addOk');
+  err.style.display = 'none'; ok.style.display = 'none';
+
+  if (!name || !email) { err.textContent = 'Name and email are required.'; err.style.display = 'block'; return; }
+  if (me.role === 'partner' && !managerId) { err.textContent = 'Choose which manager this employee reports to.'; err.style.display = 'block'; return; }
+
+  const r = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ name, email, role: 'employee', managerId }),
+  }).then(r => r.json());
+
+  if (r.error) { err.textContent = r.error; err.style.display = 'block'; return; }
+
+  ok.textContent = `✓ ${name} added successfully. Install the Wachadoin Agent on their computer using the Agent Key below.`;
+  ok.style.display = 'block';
+  document.getElementById('newName').value  = '';
+  document.getElementById('newEmail').value = '';
+  loadUserList();
+}
+
+async function createManager() {
+  const name  = document.getElementById('newMgrName').value.trim();
+  const email = document.getElementById('newMgrEmail').value.trim();
+  const pass  = document.getElementById('newMgrPass').value.trim();
+  const err   = document.getElementById('addMgrErr');
+  const ok    = document.getElementById('addMgrOk');
   err.style.display = 'none'; ok.style.display = 'none';
 
   if (!name || !email || !pass) { err.textContent = 'All fields required.'; err.style.display = 'block'; return; }
@@ -1059,17 +1314,22 @@ async function createEmployee() {
   const r = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-    body: JSON.stringify({ name, email, password: pass, role: 'employee' }),
+    body: JSON.stringify({ name, email, password: pass, role: 'manager' }),
   }).then(r => r.json());
 
   if (r.error) { err.textContent = r.error; err.style.display = 'block'; return; }
 
-  ok.textContent = `✓ ${name} added successfully. They can log in at wachadoin.onrender.com`;
+  ok.textContent = `✓ ${name} added as a manager. They can log in at /login with the password you set.`;
   ok.style.display = 'block';
-  document.getElementById('newName').value  = '';
-  document.getElementById('newEmail').value = '';
-  document.getElementById('newPass').value  = '';
+  document.getElementById('newMgrName').value  = '';
+  document.getElementById('newMgrEmail').value = '';
+  document.getElementById('newMgrPass').value  = '';
   loadUserList();
+  // Refresh the "Reports to" dropdown on the Add Employee form so the new manager is selectable.
+  api('/api/users').then(users => {
+    const mgrSel = document.getElementById('newEmpManager');
+    mgrSel.innerHTML = users.filter(u => u.role === 'manager').map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+  });
 }
 
 async function deactivateUser(id, name) {
