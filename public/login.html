@@ -247,6 +247,15 @@ select:focus { border-color: var(--primary); }
 .role-badge.manager { background: rgba(148,163,184,.18); color: var(--dim); }
 .role-badge.superadmin { background: rgba(249,115,22,.18); color: var(--orange); }
 
+/* ── Trial / subscription banner ─────────────────────────────────────────────── */
+.org-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: var(--radius); margin-bottom: 20px; font-size: 13px; }
+.org-banner.info { background: rgba(0,194,196,.12); border: 1px solid rgba(0,194,196,.35); color: var(--text); }
+.org-banner.warn { background: rgba(234,179,8,.12); border: 1px solid rgba(234,179,8,.4); color: var(--text); }
+.org-banner.danger { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.4); color: var(--text); }
+.org-banner b { color: inherit; }
+.org-note { font-size: 11px; color: var(--dim); margin-top: 4px; }
+.org-note.warn { color: var(--yellow); }
+
 /* ── App usage ───────────────────────────────────────────────────────────────── */
 .app-usage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
 .app-usage-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
@@ -433,6 +442,9 @@ tr:hover td { background: rgba(0,194,196,.05); }
         <option value="monthly" selected>Monthly</option>
         <option value="annual">Annual — save 10%, prepaid for the year</option>
       </select>
+      <p style="font-size:12px;color:var(--dim);margin-bottom:14px;line-height:1.5">
+        Your 7-day free trial starts now. Cancel any time — there's no pro-rata refund, so your plan runs the full month (or the full year, if you chose Annual) before it ends.
+      </p>
       <button class="btn btn-primary" id="btnSignup">Create my account</button>
       <div class="err-box" id="signupErr"></div>
       <p style="font-size:13px;color:var(--dim);margin-top:16px;text-align:center">
@@ -463,6 +475,11 @@ tr:hover td { background: rgba(0,194,196,.05); }
   </div>
 
   <div class="main">
+
+    <!-- Trial / cancellation notice — always visible regardless of which page is
+         active; populated by maybeShowSubscriptionNotice() below. Hidden for
+         superadmin (myOrg is null there). -->
+    <div id="orgStatusBanner" class="org-banner" style="display:none"></div>
 
     <!-- Client Organizations (superadmin only) -->
     <div class="page" id="pgOrgs">
@@ -796,6 +813,11 @@ tr:hover td { background: rgba(0,194,196,.05); }
 const API = '';
 let token = localStorage.getItem('wToken') || '';
 let me    = JSON.parse(localStorage.getItem('wUser') || 'null');
+// Not persisted to localStorage — refreshed from the server on every login/signup/
+// invite-accept and on every boot (via /api/auth/session), so it's always current
+// rather than a stale snapshot. Null for superadmin (no org of its own) and while
+// nothing has loaded yet.
+let myOrg = null;
 let statusTimer = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -848,7 +870,7 @@ document.getElementById('btnLogin').addEventListener('click', async () => {
       body: JSON.stringify({ email, password: pass }),
     }).then(r => r.json());
     if (!r.token) throw new Error(r.error || 'Login failed');
-    token = r.token; me = r.user;
+    token = r.token; me = r.user; myOrg = r.organization || null;
     localStorage.setItem('wToken', token);
     localStorage.setItem('wUser', JSON.stringify(me));
     routeAfterAuth();
@@ -948,7 +970,7 @@ document.getElementById('btnAcceptInvite').addEventListener('click', async () =>
       body: JSON.stringify({ token: inviteTokenFromUrl, password: pass }),
     }).then(r => r.json());
     if (!r.token) throw new Error(r.error || 'Activation failed');
-    token = r.token; me = r.user;
+    token = r.token; me = r.user; myOrg = r.organization || null;
     localStorage.setItem('wToken', token);
     localStorage.setItem('wUser', JSON.stringify(me));
     history.replaceState(null, '', '/login');
@@ -990,7 +1012,7 @@ document.getElementById('btnSignup').addEventListener('click', async () => {
       body: JSON.stringify({ orgName, name, email, password: pass, plan, billingCycle }),
     }).then(r => r.json());
     if (!r.token) throw new Error(r.error || 'Sign-up failed');
-    token = r.token; me = r.user;
+    token = r.token; me = r.user; myOrg = r.organization || null;
     localStorage.setItem('wToken', token);
     localStorage.setItem('wUser', JSON.stringify(me));
     routeAfterAuth();
@@ -1009,8 +1031,11 @@ function routeAfterAuth() {
   else initApp();
 }
 
-function logout() {
-  token = ''; me = null;
+// `message` is shown in the login panel's error box right away — used when logout()
+// is triggered by something the person didn't ask for (session expired, or their
+// org's access was cut off) rather than a deliberate "Sign out" click.
+function logout(message) {
+  token = ''; me = null; myOrg = null;
   localStorage.removeItem('wToken'); localStorage.removeItem('wUser');
   clearInterval(statusTimer);
   document.getElementById('appShell').style.display   = 'none';
@@ -1027,6 +1052,9 @@ function logout() {
   suBtn.disabled = false; suBtn.textContent = 'Create my account';
   document.getElementById('signupPanel').style.display = 'none';
   document.getElementById('loginPanel').style.display   = 'block';
+  const err = document.getElementById('loginErr');
+  if (message) { err.textContent = message; err.style.display = 'block'; }
+  else { err.style.display = 'none'; }
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -1122,6 +1150,7 @@ function initApp() {
   loadStatus();
   statusTimer = setInterval(loadStatus, 15000);
   maybeShowPopiaNotice();
+  maybeShowSubscriptionNotice();
 
   api('/api/users').then(users => {
     const sel = document.getElementById('shotsEmpFilter');
@@ -1591,6 +1620,45 @@ async function loadSuggestedRules() {
   allRules = r; renderRules();
 }
 
+// ── Trial / cancellation banner (managers & partners) ───────────────────────────
+// Trial expiry is a soft notice only — nothing here blocks access, it just flags
+// that the 7 days are up and the firm should be contacted about a plan. Cancellation
+// is the one that's actually enforced server-side (see auth() in server.js) once
+// accessUntil passes; this banner explains why, and how long access still runs.
+function maybeShowSubscriptionNotice() {
+  const banner = document.getElementById('orgStatusBanner');
+  if (!myOrg) { banner.style.display = 'none'; return; }
+  const fmt = iso => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  const now = new Date();
+  let cls = 'info', html = '';
+
+  if (myOrg.status === 'canceled' && myOrg.accessUntil) {
+    const until = new Date(myOrg.accessUntil);
+    if (until > now) {
+      cls  = 'warn';
+      html = `<span><b>Subscription canceled.</b> You'll keep full access until <b>${fmt(myOrg.accessUntil)}</b> — ${myOrg.billingCycle === 'annual' ? 'annual' : 'monthly'} plans run their full term and aren't refunded pro-rata.</span>`;
+    } else {
+      cls  = 'danger';
+      html = `<span><b>Subscription ended ${fmt(myOrg.accessUntil)}.</b> Contact Acute to reactivate.</span>`;
+    }
+  } else if (myOrg.status === 'trialing' && myOrg.trialEndsAt) {
+    const ends = new Date(myOrg.trialEndsAt);
+    if (ends > now) {
+      const daysLeft = Math.ceil((ends - now) / 86400000);
+      cls  = 'info';
+      html = `<span>Free trial — <b>${daysLeft} day${daysLeft === 1 ? '' : 's'} left</b> (ends ${fmt(myOrg.trialEndsAt)}).</span>`;
+    } else {
+      cls  = 'warn';
+      html = `<span><b>Your free trial ended ${fmt(myOrg.trialEndsAt)}.</b> Contact Acute to pick a plan and keep full access.</span>`;
+    }
+  }
+
+  if (!html) { banner.style.display = 'none'; return; }
+  banner.className = 'org-banner ' + cls;
+  banner.innerHTML  = html;
+  banner.style.display = 'flex';
+}
+
 // ── Monitoring/privacy onboarding notice (managers & partners) ────────────────
 function maybeShowPopiaNotice() {
   if (!me.popiaAcknowledgedAt) {
@@ -1747,6 +1815,23 @@ function renderOrgStats(orgs) {
   `;
 }
 
+// Small dim (or red, once passed) subtitle under the Status cell — the trial end
+// date while trialing, or the no-pro-rata access-until date once canceled. Both
+// come straight from the fields server.js computes (see computeAccessUntil there);
+// this is read-only display, there's no editing action tied to it.
+function orgStatusNote(o) {
+  const fmt = iso => new Date(iso).toLocaleDateString();
+  if (o.status === 'canceled' && o.accessUntil) {
+    const past = new Date(o.accessUntil) <= new Date();
+    return `<div class="org-note${past ? ' warn' : ''}">${past ? 'Access ended' : 'Access until'} ${fmt(o.accessUntil)}</div>`;
+  }
+  if (o.status === 'trialing' && o.trialEndsAt) {
+    const past = new Date(o.trialEndsAt) <= new Date();
+    return `<div class="org-note${past ? ' warn' : ''}">${past ? 'Trial ended' : 'Trial ends'} ${fmt(o.trialEndsAt)}</div>`;
+  }
+  return '';
+}
+
 function renderOrgs(orgs) {
   const planOpts    = Object.keys(PLAN_LABEL).filter(p => p !== 'platform');
   const statusOpts  = Object.keys(STATUS_LABEL);
@@ -1760,9 +1845,9 @@ function renderOrgs(orgs) {
       <td><select onchange="patchOrg('${o.id}',{billingCycle:this.value})" title="Whether this firm is paying monthly, or prepaid annually at 10% off.">
         ${billingOpts.map(b => `<option value="${b}" ${b===(o.billingCycle||'monthly')?'selected':''}>${BILLING_LABEL[b]}</option>`).join('')}
       </select></td>
-      <td><select onchange="patchOrg('${o.id}',{status:this.value})">
+      <td><select onchange="patchOrg('${o.id}',{status:this.value})" title="Cancelling isn't pro-rata — access continues to the end of the firm's current paid term, then cuts off automatically.">
         ${statusOpts.map(s => `<option value="${s}" ${s===o.status?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}
-      </select></td>
+      </select>${orgStatusNote(o)}</td>
       <td>${o.managerCount}</td>
       <td>${o.employeeCount}${o.seatLimit ? ' / ' + o.seatLimit : ''}</td>
       <td><input type="checkbox" ${o.permanentScreenshots?'checked':''} onchange="patchOrg('${o.id}',{permanentScreenshots:this.checked})"></td>
@@ -1827,7 +1912,15 @@ if (resetTokenFromUrl) {
   showAuthPanel('acceptInvitePanel');
 } else if (token && me) {
   fetch('/api/auth/session', { headers: { Authorization: `Bearer ${token}` } })
-    .then(r => r.status === 401 ? logout() : routeAfterAuth())
+    .then(r => {
+      // 401 = the token itself is no good (expired/invalid/deactivated). 403 here
+      // specifically means the org's subscription has run past its no-pro-rata
+      // cutoff (see auth() in server.js) — same end result (back to the login
+      // screen), but worth showing the real reason instead of a generic message.
+      if (r.status === 401) { logout(); return; }
+      if (r.status === 403) { return r.json().then(d => logout(d.error || undefined)); }
+      return r.json().then(d => { myOrg = d.organization || null; routeAfterAuth(); });
+    })
     .catch(() => routeAfterAuth());
 } else {
   document.getElementById('authScreen').style.display = 'flex';
