@@ -1,26 +1,22 @@
-const express = require('express');
-const path    = require('path');
-const fs      = require('fs');
-const crypto  = require('crypto');
-const bcrypt  = require('bcryptjs');
-const jwt     = require('jsonwebtoken');
+const express  = require('express');
+const path     = require('path');
+const fs       = require('fs');
+const crypto   = require('crypto');
+const bcrypt   = require('bcryptjs');
+const jwt      = require('jsonwebtoken');
+const archiver = require('archiver');
+const PDFDocument = require('pdfkit');
+const dbLib    = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Render (and most PaaS hosts) sit behind a reverse proxy that terminates HTTPS and
-// forwards plain HTTP internally, setting an X-Forwarded-Proto header to say so. Without
-// this, req.protocol always reports "http" even though the site is actually served over
-// https — which showed up as an http:// Server URL in the Agent Key modal. Trusting the
-// proxy header fixes req.protocol (and req.secure) to reflect the real public scheme.
 app.set('trust proxy', true);
 
-// Catch all errors early
 process.on('uncaughtException',  err => console.error('[uncaughtException]',  err));
 process.on('unhandledRejection', err => console.error('[unhandledRejection]', err));
 
 // ── Storage ────────────────────────────────────────────────────
-// Try DATA_DIR env var first (Render persistent disk), fall back to local .data
 let DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '.data');
 try {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -34,75 +30,26 @@ try {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-const DB_FILE       = path.join(DATA_DIR, 'timetrack.json');
-const SHOTS_DIR     = path.join(DATA_DIR, 'screenshots');
-const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
-
+const SHOTS_DIR = path.join(DATA_DIR, 'screenshots');
 if (!fs.existsSync(SHOTS_DIR)) fs.mkdirSync(SHOTS_DIR, { recursive: true });
 
-// ── Activity DB helpers ────────────────────────────────────────
-function loadActivity() {
-  if (!fs.existsSync(ACTIVITY_FILE)) return { heartbeats: [], apps: [], screenshots: [] };
-  try { return JSON.parse(fs.readFileSync(ACTIVITY_FILE, 'utf8')); }
-  catch { return { heartbeats: [], apps: [], screenshots: [] }; }
-}
+const LEGACY_DB_FILE       = path.join(DATA_DIR, 'timetrack.json');
+const LEGACY_ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
 
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — keep this in sync with the POPIA staff notice
+const db = dbLib.open(DATA_DIR);
+const genAgentToken = dbLib.genAgentToken;
 
-function saveActivity(data) {
-  // Prune entries older than the retention window to keep the file manageable. For
-  // screenshots this also deletes the actual JPEG from disk, not just the record —
-  // otherwise old screenshots would keep existing as orphaned files forever even
-  // though the dashboard no longer shows them, which would make the retention period
-  // promised to staff untrue.
-  const cutoff = Date.now() - RETENTION_MS;
-  data.heartbeats = (data.heartbeats || []).filter(r => new Date(r.ts) > cutoff);
-  data.apps       = (data.apps       || []).filter(r => new Date(r.ts) > cutoff);
+// Two retention windows, not one. Activity/timeline data (heartbeats, app usage) is a
+// per-firm record clients rely on for at least a year; screenshots are a much more
+// sensitive, short-lived evidence artifact that only sticks around longer if the
+// organization is specifically paying for permanent storage.
+const ACTIVITY_RETENTION_MS   = 365 * 24 * 60 * 60 * 1000; // 12 months
+const SCREENSHOT_RETENTION_MS = 7   * 24 * 60 * 60 * 1000; // 7 days, unless org.permanentScreenshots
 
-  const keepShots = [];
-  for (const s of (data.screenshots || [])) {
-    if (new Date(s.ts) > cutoff) {
-      keepShots.push(s);
-    } else {
-      try { fs.unlinkSync(path.join(SHOTS_DIR, s.filename)); } catch {}
-    }
-  }
-  data.screenshots = keepShots;
+const PLATFORM_ORG_ID = 'platform';
 
-  fs.writeFileSync(ACTIVITY_FILE, JSON.stringify(data));
-}
-
-// Belt-and-braces: also sweep SHOTS_DIR directly for any screenshot file older than the
-// retention window whose record may have been lost (e.g. an old file from before this
-// cleanup existed, or an activity.json write that didn't complete). Runs on boot and daily.
-function sweepOldScreenshots() {
-  try {
-    const cutoff = Date.now() - RETENTION_MS;
-    for (const f of fs.readdirSync(SHOTS_DIR)) {
-      const fp = path.join(SHOTS_DIR, f);
-      try { if (fs.statSync(fp).mtimeMs < cutoff) fs.unlinkSync(fp); } catch {}
-    }
-  } catch {}
-}
-sweepOldScreenshots();
-setInterval(sweepOldScreenshots, 24 * 60 * 60 * 1000);
-
-const JWT_SECRET = process.env.JWT_SECRET || 'timetrack-secret-please-change-me';
-
-// Long-lived per-user token used by the desktop Agent (not the 7-day web login JWT).
-// The agent authenticates with this so it can run indefinitely without anyone logging in.
-function genAgentToken() {
-  return 'wag_' + crypto.randomBytes(24).toString('hex');
-}
-
-// ── App/website rules ────────────────────────────────────────────────────────
-// Managers classify apps & window titles (which, for a browser, usually include the
-// page/site title) as "work" or "redflag" so the dashboard can highlight time spent
-// off-task. Matching is a simple case-insensitive substring match against "<appName>
-// <title>". Suggested starter list is deliberately generic — any office/knowledge-work
-// business — and is fully editable/replaceable per-account from the Monitoring Rules page.
+// ── App/website rules (unchanged defaults, now seeded per-organization) ──────
 const SUGGESTED_RULES = [
-  // Work-related — common business/productivity tools
   { pattern: 'slack',            category: 'work' },
   { pattern: 'microsoft teams',  category: 'work' },
   { pattern: 'zoom',             category: 'work' },
@@ -123,7 +70,6 @@ const SUGGESTED_RULES = [
   { pattern: 'hubspot',          category: 'work' },
   { pattern: 'figma',            category: 'work' },
   { pattern: 'github',           category: 'work' },
-  // Red flags — social/entertainment
   { pattern: 'youtube',          category: 'redflag' },
   { pattern: 'facebook',         category: 'redflag' },
   { pattern: 'instagram',        category: 'redflag' },
@@ -132,123 +78,214 @@ const SUGGESTED_RULES = [
   { pattern: 'reddit',           category: 'redflag' },
   { pattern: 'netflix',          category: 'redflag' },
   { pattern: 'twitch',           category: 'redflag' },
-  // Red flags — job hunting (possible morale/retention issue worth a quiet check-in)
   { pattern: 'linkedin jobs',    category: 'redflag' },
   { pattern: 'indeed.com',       category: 'redflag' },
   { pattern: 'glassdoor',        category: 'redflag' },
   { pattern: 'ziprecruiter',     category: 'redflag' },
 ];
 
-function ensureRules(db) {
-  if (!db.rules) { db.rules = SUGGESTED_RULES.map(r => ({ id: crypto.randomUUID(), ...r })); return true; }
-  return false;
+function ensureRules(orgId) {
+  const existing = db.listRules(orgId);
+  if (existing.length > 0) return existing;
+  const seeded = SUGGESTED_RULES.map(r => ({ id: crypto.randomUUID(), organizationId: orgId, ...r }));
+  db.replaceRules(orgId, seeded);
+  return seeded;
 }
 
-function classify(db, appName, title) {
+function classify(orgId, appName, title) {
   const hay = `${appName || ''} ${title || ''}`.toLowerCase();
-  for (const r of (db.rules || [])) {
+  for (const r of ensureRules(orgId)) {
     if (hay.includes(r.pattern.toLowerCase())) return r.category;
   }
   return 'neutral';
 }
 
-// ── DB helpers ─────────────────────────────────────────────────
-// One-time lazy migration for installations that were already running before the
-// Partner/Manager/Employee hierarchy existed. Those employee records predate
-// `managerId`, so without this a manager on an existing deployment would suddenly
-// see an EMPTY team the moment this version deploys (visibleEmployees() filters on
-// managerId, which none of their existing staff would have). Assign every employee
-// missing a managerId to the first manager account found, so nothing goes dark.
-//
-// It also bootstraps the very first Partner/Director account on installations that
-// predate that role. There's deliberately no API path to create the first partner
-// (only an existing partner can add a manager, and only a manager/partner can add
-// anyone at all) — someone has to exist to start that chain. Uses bcrypt's sync API
-// (rather than the async one used elsewhere) so this can stay a plain synchronous
-// function; loadDB() is called synchronously from many places and making it async
-// would ripple through the whole file.
-function migrateHierarchy(db) {
-  let changed = false;
+// ── One-time migration: old flat-JSON single-organization installs ─────────
+// Existing Acute production data (timetrack.json + activity.json) predates
+// organizations entirely. On first boot against the new SQLite store, if that
+// legacy data exists and hasn't been imported yet, fold it into a single
+// "legacy-internal" organization so nothing Acute already has goes dark.
+function importLegacyJsonIfPresent() {
+  if (db.listOrgs().some(o => o.id !== PLATFORM_ORG_ID)) return; // already migrated / already has real orgs
+  if (!fs.existsSync(LEGACY_DB_FILE)) return;
 
-  const firstManager = db.users.find(u => u.role === 'manager');
-  if (firstManager) {
-    for (const u of db.users) {
-      if (u.role === 'employee' && !u.managerId) { u.managerId = firstManager.id; changed = true; }
+  let legacy;
+  try { legacy = JSON.parse(fs.readFileSync(LEGACY_DB_FILE, 'utf8')); } catch { return; }
+  if (!legacy.users || legacy.users.length === 0) return;
+
+  console.log('[migration] Importing legacy single-organization data into SQLite...');
+  const org = db.createOrg({ name: 'Acute Accountants Inc', plan: 'legacy-internal', seatLimit: null, permanentScreenshots: false, status: 'internal' });
+
+  const idMap = {}; // legacy id -> same id (kept identical; only organizationId is new)
+  for (const u of legacy.users) {
+    idMap[u.id] = u.id;
+    db.insertUser({
+      id: u.id, organizationId: org.id, name: u.name, email: u.email,
+      passwordHash: u.passwordHash || null, role: u.role, managerId: u.managerId || null,
+      agentToken: u.agentToken || genAgentToken(), active: u.active !== false,
+      deactivatedAt: u.deactivatedAt || null, popiaAcknowledgedAt: u.popiaAcknowledgedAt || null,
+      createdAt: u.createdAt || new Date().toISOString(),
+    });
+  }
+  for (const e of (legacy.entries || [])) {
+    db.insertEntry({
+      id: e.id, organizationId: org.id, userId: e.userId, userName: e.userName || null,
+      project: e.project || null, task: e.task || null, startTime: e.startTime || null,
+      endTime: e.endTime || null, durationMs: e.durationMs ?? null, activityScore: e.activityScore ?? null,
+      activeMs: e.activeMs ?? null, idleMs: e.idleMs ?? null, screenshotCount: e.screenshotCount || 0,
+      status: e.status || 'completed',
+    });
+  }
+  if (legacy.rules && legacy.rules.length) {
+    db.replaceRules(org.id, legacy.rules.map(r => ({ id: r.id || crypto.randomUUID(), organizationId: org.id, pattern: r.pattern, category: r.category })));
+  }
+
+  if (fs.existsSync(LEGACY_ACTIVITY_FILE)) {
+    let activity;
+    try { activity = JSON.parse(fs.readFileSync(LEGACY_ACTIVITY_FILE, 'utf8')); } catch { activity = null; }
+    if (activity) {
+      for (const hb of (activity.heartbeats || []))
+        db.insertHeartbeat({ organizationId: org.id, userId: hb.userId, userName: hb.userName || null, activityScore: hb.activityScore ?? null, idleSecs: hb.idleSecs ?? null, isIdle: !!hb.isIdle, ts: hb.ts });
+      for (const a of (activity.apps || []))
+        db.insertAppEvent({ organizationId: org.id, userId: a.userId, userName: a.userName || null, appName: a.appName || null, title: a.title || null, category: a.category || 'neutral', ts: a.ts });
+      for (const s of (activity.screenshots || [])) {
+        try {
+          db.insertScreenshotRecord({ filename: s.filename, organizationId: org.id, userId: s.userId, userName: s.userName || null, screenIndex: s.screenIndex || 1, screenName: s.screenName || 'Screen 1', ts: s.ts });
+        } catch { /* duplicate filename — skip */ }
+      }
     }
   }
 
-  if (db.users.length > 0 && !db.users.some(u => u.role === 'partner')) {
-    const email    = process.env.PARTNER_EMAIL    || 'director@timetrack.com';
-    const password = process.env.PARTNER_PASSWORD || crypto.randomBytes(6).toString('hex');
+  console.log(`[migration] Done. Legacy data now lives under organization "${org.name}" (${org.id}).`);
+}
+
+// Reserved platform organization that superadmin accounts belong to. Not a real
+// customer — exists purely so superadmin users have somewhere to hang off of without
+// ever being mistaken for a client organization in the /api/admin/orgs list.
+function ensurePlatformOrg() {
+  if (!db.getOrg(PLATFORM_ORG_ID)) {
+    db.createOrg({ id: PLATFORM_ORG_ID, name: 'Wachadoin (platform)', plan: 'platform', seatLimit: null, permanentScreenshots: false, status: 'internal' });
+  }
+}
+
+// Bootstraps the very first superadmin (Acute's own back-office login) and, on
+// pre-multi-tenant installs, the first Partner/Director — mirroring the old
+// migrateHierarchy() bootstrap so nothing regresses for an install that already
+// went through that migration once.
+function bootstrapAccounts() {
+  ensurePlatformOrg();
+  importLegacyJsonIfPresent();
+
+  if (!db.listAllUsers().some(u => u.role === 'superadmin')) {
+    const email    = process.env.SUPERADMIN_EMAIL    || 'admin@wachadoin.com';
+    const password = process.env.SUPERADMIN_PASSWORD || crypto.randomBytes(6).toString('hex');
     const passwordHash = bcrypt.hashSync(password, 10);
-    db.users.push({ id: crypto.randomUUID(), name: 'Director', email, passwordHash,
-      role: 'partner', agentToken: genAgentToken(), createdAt: new Date().toISOString() });
-    changed = true;
-    console.log(`[Wachadoin] Bootstrapped a Partner/Director account on first boot with the new role tier — email: ${email}, password: ${password}. This is only logged once; note it down (or set PARTNER_EMAIL/PARTNER_PASSWORD before this first runs to control it yourself).`);
+    db.insertUser({ organizationId: PLATFORM_ORG_ID, name: 'Wachadoin Admin', email, passwordHash, role: 'superadmin', agentToken: genAgentToken() });
+    console.log(`[Wachadoin] Bootstrapped a superadmin account — email: ${email}, password: ${password}. This is only logged once; note it down (or set SUPERADMIN_EMAIL/SUPERADMIN_PASSWORD before this first runs to control it yourself).`);
   }
 
-  return changed;
-}
-
-function loadDB() {
-  if (!fs.existsSync(DB_FILE)) {
-    const blank = { users: [], entries: [] };
-    fs.writeFileSync(DB_FILE, JSON.stringify(blank, null, 2));
-    return blank;
+  // Legacy-internal org: backfill managerId on any employee that predates the
+  // hierarchy, and make sure it has at least one partner.
+  for (const org of db.listOrgs()) {
+    if (org.id === PLATFORM_ORG_ID) continue;
+    const users = db.listUsersByOrg(org.id);
+    if (users.length === 0) continue;
+    const firstManager = users.find(u => u.role === 'manager');
+    if (firstManager) {
+      for (const u of users) {
+        if (u.role === 'employee' && !u.managerId) db.updateUser({ ...u, managerId: firstManager.id });
+      }
+    }
+    if (!users.some(u => u.role === 'partner')) {
+      const email    = process.env.PARTNER_EMAIL    || 'director@timetrack.com';
+      const password = process.env.PARTNER_PASSWORD || crypto.randomBytes(6).toString('hex');
+      const passwordHash = bcrypt.hashSync(password, 10);
+      db.insertUser({ organizationId: org.id, name: 'Director', email, passwordHash, role: 'partner', agentToken: genAgentToken() });
+      console.log(`[Wachadoin] Bootstrapped a Partner/Director account for org "${org.name}" — email: ${email}, password: ${password}.`);
+    }
   }
-  let db;
-  try { db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
-  catch { return { users: [], entries: [] }; }
-  if (migrateHierarchy(db)) saveDB(db);
-  return db;
 }
+bootstrapAccounts();
 
-function saveDB(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-}
+// Demo data for a genuinely fresh install (no legacy JSON, no orgs at all) — useful
+// for local dev/testing. Real customer organizations always come from /api/auth/signup.
+function maybeSeedDemoOrg() {
+  const realOrgs = db.listOrgs().filter(o => o.id !== PLATFORM_ORG_ID);
+  if (realOrgs.length > 0) return;
 
-// ── Seed demo accounts on first run ───────────────────────────
-// Three tiers: 'partner' (sees every manager and every employee across the whole
-// organization — for firms large enough to have more than one manager), 'manager'
-// (sees only the employees assigned to them via managerId), and 'employee' (no
-// dashboard login at all — tracked only through their Agent Key).
-async function maybeSeed() {
-  const db = loadDB();
-  if (db.users.length > 0) return;
-
-  const partnerHash = await bcrypt.hash('director123', 10);
-  const manHash     = await bcrypt.hash('admin123', 10);
+  const org = db.createOrg({ name: 'Demo Firm', plan: 'growth', seatLimit: null, permanentScreenshots: false, status: 'trialing' });
+  const partnerHash = bcrypt.hashSync('director123', 10);
+  const manHash     = bcrypt.hashSync('admin123', 10);
   const today       = new Date().toISOString().split('T')[0];
 
-  db.users = [
-    { id:'u0', name:'Director',       email:'director@timetrack.com', passwordHash:partnerHash, role:'partner',  agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u1', name:'Admin Manager',  email:'admin@timetrack.com',    passwordHash:manHash,     role:'manager',  agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u2', name:'Sarah Johnson',  email:'sarah@timetrack.com',    role:'employee', managerId:'u1', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u3', name:'Marcus Chen',    email:'marcus@timetrack.com',   role:'employee', managerId:'u1', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-    { id:'u4', name:'Tom Walker',     email:'tom@timetrack.com',      role:'employee', managerId:'u1', agentToken:genAgentToken(), createdAt:new Date().toISOString() },
-  ];
-  db.entries = [
-    { id:'e1', userId:'u2', userName:'Sarah Johnson', project:'Acme Corp – Website Redesign', task:'Frontend Development', startTime:`${today}T08:02:00.000Z`, endTime:`${today}T10:45:00.000Z`, durationMs:9780000,  activityScore:91, screenshotCount:18, status:'completed' },
-    { id:'e2', userId:'u3', userName:'Marcus Chen',   project:'Beta Ltd – Mobile App',        task:'iOS Development',      startTime:`${today}T08:15:00.000Z`, endTime:`${today}T12:00:00.000Z`, durationMs:13500000, activityScore:95, screenshotCount:22, status:'completed' },
-    { id:'e3', userId:'u4', userName:'Tom Walker',    project:'Gamma Inc – Data Migration',   task:'ETL Development',      startTime:`${today}T07:55:00.000Z`, endTime:`${today}T11:30:00.000Z`, durationMs:12900000, activityScore:82, screenshotCount:20, status:'completed' },
-    { id:'e4', userId:'u2', userName:'Sarah Johnson', project:'Acme Corp – Website Redesign', task:'Client Calls',         startTime:`${today}T11:00:00.000Z`, endTime:`${today}T11:45:00.000Z`, durationMs:2700000,  activityScore:65, screenshotCount:5,  status:'completed' },
-    { id:'e5', userId:'u3', userName:'Marcus Chen',   project:'Beta Ltd – Mobile App',        task:'API Integration',      startTime:`${today}T12:30:00.000Z`, endTime:`${today}T14:45:00.000Z`, durationMs:8100000,  activityScore:88, screenshotCount:15, status:'completed' },
-    { id:'e6', userId:'u4', userName:'Tom Walker',    project:'Gamma Inc – Data Migration',   task:'Testing',              startTime:`${today}T12:00:00.000Z`, endTime:`${today}T15:00:00.000Z`, durationMs:10800000, activityScore:74, screenshotCount:17, status:'completed' },
-  ];
-  saveDB(db);
+  const partner = db.insertUser({ organizationId: org.id, name: 'Director', email: 'director@timetrack.com', passwordHash: partnerHash, role: 'partner' });
+  const manager = db.insertUser({ organizationId: org.id, name: 'Admin Manager', email: 'admin@timetrack.com', passwordHash: manHash, role: 'manager' });
+  const emps = [
+    { name: 'Sarah Johnson', email: 'sarah@timetrack.com' },
+    { name: 'Marcus Chen',   email: 'marcus@timetrack.com' },
+    { name: 'Tom Walker',    email: 'tom@timetrack.com' },
+  ].map(e => db.insertUser({ organizationId: org.id, name: e.name, email: e.email, role: 'employee', managerId: manager.id }));
+
+  const mk = (userId, userName, project, task, startTime, endTime, activityScore, screenshotCount) =>
+    db.insertEntry({ id: crypto.randomUUID(), organizationId: org.id, userId, userName, project, task, startTime, endTime,
+      durationMs: new Date(endTime) - new Date(startTime), activityScore, activeMs: null, idleMs: null, screenshotCount, status: 'completed' });
+
+  mk(emps[0].id, emps[0].name, 'Acme Corp – Website Redesign', 'Frontend Development', `${today}T08:02:00.000Z`, `${today}T10:45:00.000Z`, 91, 18);
+  mk(emps[1].id, emps[1].name, 'Beta Ltd – Mobile App',        'iOS Development',      `${today}T08:15:00.000Z`, `${today}T12:00:00.000Z`, 95, 22);
+  mk(emps[2].id, emps[2].name, 'Gamma Inc – Data Migration',   'ETL Development',      `${today}T07:55:00.000Z`, `${today}T11:30:00.000Z`, 82, 20);
+
   console.log('[Wachadoin] Demo data ready. Manager login: admin@timetrack.com / admin123. Director (partner) login: director@timetrack.com / director123');
 }
-maybeSeed();
+maybeSeedDemoOrg();
+
+// ── Retention sweep ────────────────────────────────────────────────────────
+function sweepRetention() {
+  const activityCutoffIso = new Date(Date.now() - ACTIVITY_RETENTION_MS).toISOString();
+  for (const org of db.listOrgs()) {
+    if (org.id === PLATFORM_ORG_ID) continue;
+    db.pruneHeartbeats(org.id, activityCutoffIso);
+    db.pruneAppEvents(org.id, activityCutoffIso);
+
+    if (org.permanentScreenshots) continue; // this org has paid to keep screenshots forever
+    const shotCutoffIso = new Date(Date.now() - SCREENSHOT_RETENTION_MS).toISOString();
+    for (const filename of db.expiredScreenshotFilenames(org.id, shotCutoffIso)) {
+      db.deleteScreenshotRecord(filename);
+      try { fs.unlinkSync(path.join(SHOTS_DIR, filename)); } catch {}
+    }
+  }
+}
+// Belt-and-braces sweep of orphaned screenshot files on disk (e.g. a DB row lost to a
+// crash mid-write) — only safe to delete by file age, capped at the shortest retention
+// any org could have (7 days); a permanent-storage org's files are never this old in
+// practice since their rows are never pruned, but if a file truly has no matching row
+// at all it's orphaned regardless of org and safe to remove once past the default window.
+function sweepOrphanedScreenshotFiles() {
+  try {
+    const cutoff = Date.now() - SCREENSHOT_RETENTION_MS;
+    for (const f of fs.readdirSync(SHOTS_DIR)) {
+      const fp = path.join(SHOTS_DIR, f);
+      try {
+        if (fs.statSync(fp).mtimeMs < cutoff && !db.raw.prepare('SELECT 1 FROM screenshots WHERE filename = ?').get(f)) {
+          fs.unlinkSync(fp);
+        }
+      } catch {}
+    }
+  } catch {}
+}
+sweepRetention();
+sweepOrphanedScreenshotFiles();
+setInterval(() => { sweepRetention(); sweepOrphanedScreenshotFiles(); }, 24 * 60 * 60 * 1000);
+
+const JWT_SECRET = process.env.JWT_SECRET || 'timetrack-secret-please-change-me';
 
 // ── Middleware ─────────────────────────────────────────────────
 app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// The dashboard/login single-page app lives at public/login.html (not public/index.html —
-// that's now the marketing landing page served automatically at "/"). Express's static
-// middleware only serves login.html at the literal "/login.html" URL, so this route adds
-// the clean "/login" address the landing page's "Sign in" button links to.
 app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+app.get('/signup', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
@@ -256,41 +293,29 @@ function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
 
-  // Long-lived Agent tokens (used by the desktop background agent, not a browser login)
-  // look like "wag_...". They never expire, so the agent can run indefinitely with no
-  // one logging in. Anything else is treated as a normal 7-day web-login JWT.
   if (token.startsWith('wag_')) {
-    const db   = loadDB();
-    const user = db.users.find(u => u.agentToken === token);
+    const user = db.findUserByAgentToken(token);
     if (!user) return res.status(401).json({ error: 'Invalid agent token' });
-    // Deactivated staff (e.g. after leaving) stop being able to report activity
-    // immediately, even though their key hasn't been regenerated.
     if (user.active === false) return res.status(401).json({ error: 'Account deactivated' });
-    req.user = { id: user.id, name: user.name, email: user.email, role: user.role, viaAgent: true };
+    req.user = { id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId, viaAgent: true };
     return next();
   }
 
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-  // Staff (role 'employee') have no dashboard login at all — they're tracked only via
-  // their wag_ Agent Key, handled above. A web-login JWT should never carry that role;
-  // the only way one could is a token issued before this restriction existed, so reject
-  // it defensively rather than trusting a stale 7-day-old token.
-  if (req.user.role === 'employee') return res.status(403).json({ error: 'Staff accounts do not have dashboard access' });
-  // A web session token stays "valid" for 7 days by design, but if the account was
-  // deactivated mid-session it should be kicked out on its very next request rather
-  // than waiting for the token to expire naturally.
-  const db = loadDB();
-  const u  = db.users.find(x => x.id === req.user.id);
+  let payload;
+  try { payload = jwt.verify(token, JWT_SECRET); }
+  catch { return res.status(401).json({ error: 'Invalid or expired token' }); }
+
+  if (payload.role === 'employee') return res.status(403).json({ error: 'Staff accounts do not have dashboard access' });
+
+  const u = db.findUserById(payload.id);
   if (!u) return res.status(401).json({ error: 'Invalid or expired token' });
   if (u.active === false) return res.status(401).json({ error: 'Account deactivated' });
+  // Always trust the freshly-loaded organizationId/role over the (possibly days-old) JWT
+  // payload, defensively — there's no role-change endpoint today, but this costs nothing.
+  req.user = { id: u.id, name: u.name, email: u.email, role: u.role, organizationId: u.organizationId };
   next();
 }
 
-// Any logged-in dashboard role (manager or partner) — staff never reach here (see auth()).
 function managerOrAbove(req, res, next) {
   if (!['manager', 'partner'].includes(req.user?.role)) return res.status(403).json({ error: 'Manager access required' });
   next();
@@ -299,31 +324,36 @@ function partnerOnly(req, res, next) {
   if (req.user?.role !== 'partner') return res.status(403).json({ error: 'Partner access required' });
   next();
 }
+// Acute's own back-office role. Deliberately cannot see into any organization's
+// activity data — only organization/subscription metadata — so "Acute can manage
+// billing" never quietly becomes "Acute can read a client's staff activity."
+function superAdminOnly(req, res, next) {
+  if (req.user?.role !== 'superadmin') return res.status(403).json({ error: 'Admin access required' });
+  next();
+}
 
-// Org hierarchy: a partner/director sees every manager and every employee in the
-// organization; a manager sees only the employees assigned to them (employee.managerId).
-function visibleEmployees(db, actor) {
-  const employees = db.users.filter(u => u.role === 'employee');
+// Org hierarchy, scoped to the caller's own organization only. `users` must already be
+// the org-scoped list (db.listUsersByOrg(actor.organizationId)) — every call site below
+// fetches that first, so no cross-tenant leakage can happen here.
+function visibleEmployees(users, actor) {
+  const employees = users.filter(u => u.role === 'employee');
   if (actor.role === 'partner') return employees;
   return employees.filter(e => e.managerId === actor.id);
 }
-function visibleEmployeeIds(db, actor) {
-  return new Set(visibleEmployees(db, actor).map(e => e.id));
+function visibleEmployeeIds(users, actor) {
+  return new Set(visibleEmployees(users, actor).map(e => e.id));
 }
-// Can `actor` (manager/partner) view or act on `target`? Partners can manage everyone
-// except other partners (to avoid partners locking each other out). Managers can only
-// manage the employees assigned to them.
+// Can `actor` (manager/partner) view or act on `target`? Cross-tenant actions are always
+// rejected first — a partner at Firm A must never be able to manage a user at Firm B,
+// even by guessing/enumerating a valid user id.
 function canManage(actor, target) {
+  if (!target || target.organizationId !== actor.organizationId) return false;
   if (actor.id === target.id) return true;
   if (actor.role === 'partner') return target.role !== 'partner';
   if (actor.role === 'manager') return target.role === 'employee' && target.managerId === actor.id;
   return false;
 }
 
-// Resolves either a single ?date=YYYY-MM-DD or a ?from=...&to=... range from the query
-// string into a consistent {from, to} pair (inclusive), defaulting to just today. This
-// lets every activity-reporting endpoint support both "one day" and "day/week/month/
-// custom range" views without duplicating the parsing logic.
 function resolveRange(req) {
   const today = new Date().toISOString().split('T')[0];
   if (req.query.from || req.query.to) {
@@ -334,26 +364,16 @@ function resolveRange(req) {
   const d = req.query.date || today;
   return { from: d, to: d };
 }
-function tsInRange(ts, from, to) {
-  const day = (ts || '').slice(0, 10);
-  return day >= from && day <= to;
-}
 
 // ── Auth ───────────────────────────────────────────────────────
-// Creates a person in the org. This used to be an open public "register" endpoint (no
-// auth required at all, which meant literally anyone could have created themselves a
-// manager account) — it's now a manager/partner-only admin action, matching how it's
-// actually used from the Team Members page. Staff (role 'employee') never get a
-// password or a login token; they're only ever identified by their Agent Key.
-// Managers can only create employees, auto-assigned to themselves. Partners can create
-// employees (choosing which manager the employee reports to) or new managers.
+// Creates a person inside the caller's own organization. Staff (role 'employee')
+// never get a password; they're only ever identified by their Agent Key.
 app.post('/api/auth/register', auth, managerOrAbove, async (req, res) => {
   const { name, email, password, role, managerId } = req.body;
   if (!name || !email) return res.status(400).json({ error: 'Name and email are required' });
-  const db = loadDB();
-  if (db.users.find(u => u.email.toLowerCase() === email.toLowerCase()))
-    return res.status(400).json({ error: 'Email already registered' });
+  if (db.findUserByEmail(email)) return res.status(400).json({ error: 'Email already registered' });
 
+  const orgUsers = db.listUsersByOrg(req.user.organizationId);
   const wantsManager = role === 'manager' && req.user.role === 'partner';
   if (role === 'manager' && req.user.role !== 'partner')
     return res.status(403).json({ error: 'Only a partner/director can add a manager' });
@@ -362,63 +382,77 @@ app.post('/api/auth/register', auth, managerOrAbove, async (req, res) => {
   let user;
   if (wantsManager) {
     const passwordHash = await bcrypt.hash(password, 10);
-    user = { id: crypto.randomUUID(), name: name.trim(), email: email.toLowerCase().trim(),
-             passwordHash, role: 'manager', agentToken: genAgentToken(), createdAt: new Date().toISOString() };
+    user = db.insertUser({ organizationId: req.user.organizationId, name: name.trim(), email: email.toLowerCase().trim(), passwordHash, role: 'manager' });
   } else {
-    // Employee — no password, no login. Managers are auto-assigned to themselves;
-    // partners must say which manager this person reports to.
     let assignedManagerId = req.user.role === 'manager' ? req.user.id : managerId;
-    const mgr = db.users.find(u => u.id === assignedManagerId && u.role === 'manager');
+    const mgr = orgUsers.find(u => u.id === assignedManagerId && u.role === 'manager');
     if (!mgr) return res.status(400).json({ error: 'A valid manager must be chosen for this employee' });
-    user = { id: crypto.randomUUID(), name: name.trim(), email: email.toLowerCase().trim(),
-             role: 'employee', managerId: mgr.id, agentToken: genAgentToken(), createdAt: new Date().toISOString() };
+    user = db.insertUser({ organizationId: req.user.organizationId, name: name.trim(), email: email.toLowerCase().trim(), role: 'employee', managerId: mgr.id });
   }
-  db.users.push(user);
-  saveDB(db);
-  res.json({ user: { id:user.id, name:user.name, email:user.email, role:user.role, managerId:user.managerId||null } });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, managerId: user.managerId || null } });
+});
+
+// Public self-serve signup: creates a brand-new organization plus its first Partner
+// account in one step. This is the only way a new organization comes into being —
+// every other account is created by an existing partner/manager inside their org.
+// No payment is collected here (that's Phase 2); new organizations start trialing.
+const PUBLIC_PLANS = new Set(['starter', 'growth', 'firm']);
+app.post('/api/auth/signup', async (req, res) => {
+  const { orgName, name, email, password } = req.body;
+  let { plan } = req.body;
+  if (!orgName || !name || !email || !password) return res.status(400).json({ error: 'Firm name, your name, email and password are required' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (db.findUserByEmail(email)) return res.status(400).json({ error: 'Email already registered' });
+  if (!PUBLIC_PLANS.has(plan)) plan = 'starter';
+
+  const org = db.createOrg({ name: orgName.trim(), plan, seatLimit: null, permanentScreenshots: false, status: 'trialing' });
+  const passwordHash = await bcrypt.hash(password, 10);
+  const partner = db.insertUser({ organizationId: org.id, name: name.trim(), email: email.toLowerCase().trim(), passwordHash, role: 'partner' });
+
+  const token = jwt.sign({ id: partner.id, name: partner.name, email: partner.email, role: partner.role, organizationId: org.id }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { id: org.id, name: org.name, plan: org.plan, status: org.status } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
-  const db   = loadDB();
-  const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-  // Staff never had a password to begin with, so !user.passwordHash catches them too —
-  // but check the role explicitly first so the message is actually helpful to them.
+  const user = db.findUserByEmail(email);
   if (user && user.role === 'employee')
     return res.status(403).json({ error: "Staff accounts don't have a dashboard login — ask your manager for your Agent Key instead." });
   if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash)))
     return res.status(401).json({ error: 'Invalid email or password' });
   if (user.active === false)
     return res.status(403).json({ error: 'This account has been deactivated. Contact your manager.' });
-  const token = jwt.sign({ id:user.id, name:user.name, email:user.email, role:user.role }, JWT_SECRET, { expiresIn:'7d' });
-  res.json({ token, user: { id:user.id, name:user.name, email:user.email, role:user.role, popiaAcknowledgedAt:user.popiaAcknowledgedAt||null } });
+  const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, popiaAcknowledgedAt: user.popiaAcknowledgedAt || null } });
 });
 
-// Acknowledge the POPIA monitoring notice (shown once to new managers before they can
-// start monitoring staff). Anyone can ack their own account.
 app.post('/api/auth/popia-ack', auth, (req, res) => {
-  const db   = loadDB();
-  const user = db.users.find(u => u.id === req.user.id);
+  const user = db.findUserById(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  user.popiaAcknowledgedAt = new Date().toISOString();
-  saveDB(db);
-  res.json({ ok: true, popiaAcknowledgedAt: user.popiaAcknowledgedAt });
+  const popiaAcknowledgedAt = new Date().toISOString();
+  db.updateUser({ ...user, popiaAcknowledgedAt });
+  res.json({ ok: true, popiaAcknowledgedAt });
+});
+
+// Lightweight "is my token still valid, and who am I" check the frontend can call
+// for ANY authenticated dashboard role (manager, partner, or superadmin) — unlike
+// /api/users, which 403s for superadmin since superadmin isn't scoped to an
+// organization at all.
+app.get('/api/auth/session', auth, (req, res) => {
+  res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role } });
 });
 
 // ── Users ──────────────────────────────────────────────────────
-// A manager sees themselves and only their own team; a partner sees every manager and
-// every employee in the org (with each employee's managerName resolved, so the Team
-// Members page can group them).
 app.get('/api/users', auth, managerOrAbove, (req, res) => {
-  const db = loadDB();
-  const managers = db.users.filter(u => u.role === 'manager');
+  const orgUsers = db.listUsersByOrg(req.user.organizationId);
+  const managers = orgUsers.filter(u => u.role === 'manager');
   const mgrName  = id => managers.find(m => m.id === id)?.name || null;
 
   let visible;
   if (req.user.role === 'partner') {
-    visible = db.users.filter(u => u.role !== 'partner' || u.id === req.user.id);
+    visible = orgUsers.filter(u => u.role !== 'partner' || u.id === req.user.id);
   } else {
-    visible = [req.user, ...visibleEmployees(db, req.user)].map(u => db.users.find(x => x.id === u.id) || u);
+    visible = [req.user, ...visibleEmployees(orgUsers, req.user)].map(u => orgUsers.find(x => x.id === u.id) || u);
   }
   res.json(visible.map(u => ({
     id: u.id, name: u.name, email: u.email, role: u.role, active: u.active !== false,
@@ -426,74 +460,49 @@ app.get('/api/users', auth, managerOrAbove, (req, res) => {
   })));
 });
 
-// GET the Agent setup key for a user — used to install the desktop background agent on
-// their machine (Windows or Mac) so it can run without them ever logging in day-to-day.
 app.get('/api/users/:id/agent-token', auth, managerOrAbove, (req, res) => {
-  const db   = loadDB();
-  const user = db.users.find(u => u.id === req.params.id);
+  const user = db.findUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
-  if (!user.agentToken) { user.agentToken = genAgentToken(); saveDB(db); }
-  res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
+  const agentToken = user.agentToken || genAgentToken();
+  if (!user.agentToken) db.updateUser({ ...user, agentToken });
+  res.json({ agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
 });
 
-// Regenerate (invalidate + replace) a user's Agent key, e.g. if a laptop is lost/decommissioned.
 app.post('/api/users/:id/agent-token/regenerate', auth, managerOrAbove, (req, res) => {
-  const db   = loadDB();
-  const user = db.users.find(u => u.id === req.params.id);
+  const user = db.findUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
-  user.agentToken = genAgentToken();
-  saveDB(db);
-  res.json({ agentToken: user.agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
+  const agentToken = genAgentToken();
+  db.updateUser({ ...user, agentToken });
+  res.json({ agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
 });
 
-// Offboarding — deactivate: the recommended way to remove someone who has left.
-// Blocks their web login and stops the background agent from reporting immediately,
-// but keeps their name and historical time entries / activity summaries on file
-// (useful for the firm's own audit trail, and more in line with data-privacy laws'
-// preference for retaining only what you actually need rather than erasing records
-// that might still matter for a dispute or handover). A manager can only deactivate
-// their own staff; a partner can also deactivate managers (but not other partners).
 app.post('/api/users/:id/deactivate', auth, managerOrAbove, (req, res) => {
-  const db   = loadDB();
-  const user = db.users.find(u => u.id === req.params.id);
+  const user = db.findUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (user.role === 'partner') return res.status(400).json({ error: 'Cannot deactivate a partner account' });
   if (req.user.role === 'manager' && user.role !== 'employee') return res.status(400).json({ error: 'Managers can only deactivate their own staff' });
   if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
-  user.active = false;
-  user.deactivatedAt = new Date().toISOString();
-  saveDB(db);
+  db.updateUser({ ...user, active: false, deactivatedAt: new Date().toISOString() });
   res.json({ ok: true, active: false });
 });
 
-// Reverse a deactivation, e.g. someone was let go by mistake or has rejoined.
 app.post('/api/users/:id/reactivate', auth, managerOrAbove, (req, res) => {
-  const db   = loadDB();
-  const user = db.users.find(u => u.id === req.params.id);
+  const user = db.findUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
-  user.active = true;
-  user.deactivatedAt = null;
-  saveDB(db);
+  db.updateUser({ ...user, active: true, deactivatedAt: null });
   res.json({ ok: true, active: true });
 });
 
-// Permanent removal — wipes the account entirely, including the option to ever see
-// their historical entries again. Deactivate is almost always the right first step;
-// use this only when you specifically need the record gone (e.g. a data-erasure
-// request), since it can't be undone the way deactivation can.
 app.delete('/api/users/:id', auth, managerOrAbove, (req, res) => {
-  const db  = loadDB();
-  const idx = db.users.findIndex(u => u.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'User not found' });
-  const target = db.users[idx];
+  const target = db.findUserById(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
   if (target.role === 'partner') return res.status(400).json({ error: 'Cannot delete a partner account' });
   if (req.user.role === 'manager' && target.role !== 'employee') return res.status(400).json({ error: 'Managers can only remove their own staff' });
   if (!canManage(req.user, target)) return res.status(403).json({ error: 'Not allowed' });
-  db.users.splice(idx, 1);
-  saveDB(db);
+  db.deleteUser(target.id);
   res.json({ ok: true });
 });
 
@@ -501,84 +510,73 @@ app.delete('/api/users/:id', auth, managerOrAbove, (req, res) => {
 app.post('/api/entries', auth, (req, res) => {
   const { project, task } = req.body;
   if (!project || !task) return res.status(400).json({ error: 'Project and task required' });
-  const db = loadDB();
-  db.entries.filter(e => e.userId === req.user.id && e.status === 'running').forEach(e => {
-    e.endTime = new Date().toISOString();
-    e.durationMs = new Date(e.endTime) - new Date(e.startTime);
-    e.status = 'completed';
-  });
-  const entry = { id:Date.now().toString(), userId:req.user.id, userName:req.user.name,
-    project, task, startTime:new Date().toISOString(), endTime:null,
-    durationMs:null, activityScore:null, screenshotCount:0, status:'running' };
-  db.entries.push(entry);
-  saveDB(db);
+  for (const running of db.findRunningEntries(req.user.id)) {
+    running.endTime    = new Date().toISOString();
+    running.durationMs = new Date(running.endTime) - new Date(running.startTime);
+    running.status     = 'completed';
+    db.updateEntry(running);
+  }
+  const entry = { id: crypto.randomUUID(), organizationId: req.user.organizationId, userId: req.user.id, userName: req.user.name,
+    project, task, startTime: new Date().toISOString(), endTime: null,
+    durationMs: null, activityScore: null, activeMs: null, idleMs: null, screenshotCount: 0, status: 'running' };
+  db.insertEntry(entry);
   res.json(entry);
 });
 
 app.put('/api/entries/:id', auth, (req, res) => {
   const { activityScore, activeMs, idleMs } = req.body;
-  const db = loadDB();
-  const e  = db.entries.find(e => e.id === req.params.id && e.userId === req.user.id);
-  if (!e) return res.status(404).json({ error: 'Entry not found' });
+  const e = db.findEntryById(req.params.id);
+  if (!e || e.userId !== req.user.id) return res.status(404).json({ error: 'Entry not found' });
   e.endTime       = new Date().toISOString();
   e.durationMs    = new Date(e.endTime) - new Date(e.startTime);
   e.activityScore = Math.round(activityScore ?? 0);
   e.activeMs      = activeMs ?? null;
   e.idleMs        = idleMs   ?? null;
   e.status        = 'completed';
-  saveDB(db);
+  db.updateEntry(e);
   res.json(e);
 });
 
 app.delete('/api/entries/:id', auth, (req, res) => {
-  const db  = loadDB();
-  const idx = db.entries.findIndex(e => e.id === req.params.id && e.userId === req.user.id);
-  if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  db.entries.splice(idx, 1);
-  saveDB(db);
+  const e = db.findEntryById(req.params.id);
+  if (!e || e.userId !== req.user.id) return res.status(404).json({ error: 'Not found' });
+  db.deleteEntry(e.id, req.user.organizationId);
   res.json({ ok: true });
 });
 
 app.get('/api/entries', auth, (req, res) => {
-  const db = loadDB();
   const { from, to } = resolveRange(req);
-  let list = db.entries.filter(e => tsInRange(e.startTime, from, to));
+  let list = db.listEntriesByOrg(req.user.organizationId, { from, to });
   if (req.user.role === 'manager') {
-    const ids = visibleEmployeeIds(db, req.user);
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
     ids.add(req.user.id);
     list = list.filter(e => ids.has(e.userId));
   } else if (req.user.role !== 'partner') {
     list = list.filter(e => e.userId === req.user.id);
   }
-  res.json(list.sort((a,b) => new Date(b.startTime) - new Date(a.startTime)));
+  res.json(list);
 });
 
-// Every entry visible to the requester, with no date filter — a partner gets the
-// whole org, a manager gets their own team (mirrors the scoping in /api/entries).
 app.get('/api/entries/all', auth, managerOrAbove, (req, res) => {
-  const db = loadDB();
-  let list = db.entries;
+  let list = db.listEntriesByOrg(req.user.organizationId);
   if (req.user.role === 'manager') {
-    const ids = visibleEmployeeIds(db, req.user);
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
     ids.add(req.user.id);
     list = list.filter(e => ids.has(e.userId));
   }
-  res.json(list.sort((a,b) => new Date(b.startTime) - new Date(a.startTime)));
+  res.json(list);
 });
 
 // ── Screenshots ────────────────────────────────────────────────
 app.post('/api/screenshots', auth, (req, res) => {
-  const { entryId, base64, screenName, screenIndex } = req.body;
+  const { entryId, base64, screenIndex } = req.body;
   if (!base64) return res.status(400).json({ error: 'No image data' });
   const safeScreen = `screen${screenIndex || 1}`;
   const filename = `${req.user.id}_${Date.now()}_${safeScreen}.jpg`;
   try {
     fs.writeFileSync(path.join(SHOTS_DIR, filename), Buffer.from(base64, 'base64'));
-    if (entryId) {
-      const db = loadDB();
-      const e  = db.entries.find(e => e.id === entryId);
-      if (e) { e.screenshotCount = (e.screenshotCount||0) + 1; saveDB(db); }
-    }
+    db.insertScreenshotRecord({ filename, organizationId: req.user.organizationId, userId: req.user.id, userName: req.user.name, screenIndex: screenIndex || 1, screenName: `Screen ${screenIndex || 1}`, ts: new Date().toISOString() });
+    if (entryId) db.bumpScreenshotCount(entryId);
     res.json({ filename });
   } catch (e) {
     res.status(500).json({ error: 'Failed to save screenshot' });
@@ -586,57 +584,73 @@ app.post('/api/screenshots', auth, (req, res) => {
 });
 
 app.get('/api/screenshots', auth, (req, res) => {
-  try {
-    const db  = loadDB();
-    const ids = req.user.role === 'manager' ? visibleEmployeeIds(db, req.user) : null;
-    if (ids) ids.add(req.user.id);
-    const files = fs.readdirSync(SHOTS_DIR).filter(f => f.endsWith('.jpg'))
-      .map(f => {
-        const parts     = f.replace('.jpg','').split('_');
-        const userId    = parts[0];
-        const screenNum = parseInt((parts[2]||'screen1').replace('screen','')) || 1;
-        return { filename:f, userId, ts: fs.statSync(path.join(SHOTS_DIR,f)).mtimeMs,
-                 userName: db.users.find(u=>u.id===userId)?.name || 'Unknown',
-                 screenNum, screenLabel: `Screen ${screenNum}` };
-      })
-      .filter(f => req.user.role === 'partner' || (ids ? ids.has(f.userId) : f.userId === req.user.id))
-      .sort((a,b) => b.ts - a.ts).slice(0, 50);
-    res.json(files);
-  } catch { res.json([]); }
+  const ids = req.user.role === 'manager' ? visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user) : null;
+  if (ids) ids.add(req.user.id);
+  let shots = db.listRecentScreenshotsByOrg(req.user.organizationId, 50);
+  shots = shots.filter(s => req.user.role === 'partner' || (ids ? ids.has(s.userId) : s.userId === req.user.id));
+  res.json(shots.map(s => ({ filename: s.filename, userId: s.userId, userName: s.userName, ts: new Date(s.ts).getTime(), screenNum: s.screenIndex, screenLabel: s.screenName })));
+});
+
+// NOTE: this must stay registered before the /:filename route below, otherwise Express
+// would match "export" itself as a :filename and this would never be reached.
+app.get('/api/screenshots/export', auth, managerOrAbove, (req, res) => {
+  const { from, to } = resolveRange(req);
+  let shots = db.listScreenshotsByOrgRange(req.user.organizationId, from, to);
+  if (req.query.userId) {
+    const target = db.findUserById(req.query.userId);
+    if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
+      return res.status(403).json({ error: 'Not allowed to view this user' });
+    shots = shots.filter(s => s.userId === req.query.userId);
+  } else if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
+    shots = shots.filter(s => ids.has(s.userId));
+  }
+
+  const rangeLabel = from === to ? from : `${from}_to_${to}`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="wachadoin-screenshots-${rangeLabel}.zip"`);
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  archive.pipe(res);
+
+  const manifest = ['filename,employee,timestamp,screen'];
+  for (const s of shots) {
+    const fp = path.join(SHOTS_DIR, s.filename);
+    if (fs.existsSync(fp)) archive.file(fp, { name: s.filename });
+    manifest.push([s.filename, s.userName, s.ts, s.screenName].map(csvEscape).join(','));
+  }
+  archive.append(manifest.join('\r\n'), { name: 'manifest.csv' });
+  archive.finalize();
 });
 
 app.get('/api/screenshots/:filename', auth, (req, res) => {
-  const fp = path.join(SHOTS_DIR, path.basename(req.params.filename));
+  const filename = path.basename(req.params.filename);
+  const record = db.raw.prepare('SELECT * FROM screenshots WHERE filename = ?').get(filename);
+  if (!record || record.organizationId !== req.user.organizationId) return res.status(404).end();
+  const fp = path.join(SHOTS_DIR, filename);
   if (!fs.existsSync(fp)) return res.status(404).end();
   res.sendFile(fp);
 });
 
 // ── Activity API ────────────────────────────────────────────────────────────
-
-// POST /api/activity — receive heartbeat, app event, or screenshot from agent
 app.post('/api/activity', auth, (req, res) => {
   const { type, ts } = req.body;
   if (!type) return res.status(400).json({ error: 'type required' });
 
-  const activity = loadActivity();
+  const organizationId = req.user.organizationId;
   const userId   = req.user.id;
   const userName = req.user.name;
   const now      = ts || new Date().toISOString();
 
   if (type === 'heartbeat') {
     const { activityScore, idleSecs, isIdle } = req.body;
-    activity.heartbeats.push({ userId, userName, activityScore, idleSecs, isIdle, ts: now });
-    saveActivity(activity);
+    db.insertHeartbeat({ organizationId, userId, userName, activityScore, idleSecs, isIdle: !!isIdle, ts: now });
     return res.json({ ok: true });
   }
 
   if (type === 'app') {
     const { appName, title } = req.body;
-    const db = loadDB();
-    ensureRules(db) && saveDB(db);
-    const category = classify(db, appName, title);
-    activity.apps.push({ userId, userName, appName, title, category, ts: now });
-    saveActivity(activity);
+    const category = classify(organizationId, appName, title);
+    db.insertAppEvent({ organizationId, userId, userName, appName, title, category, ts: now });
     return res.json({ ok: true, category });
   }
 
@@ -647,8 +661,7 @@ app.post('/api/activity', auth, (req, res) => {
     const filename   = `${userId}_${Date.now()}_${safeScreen}.jpg`;
     try {
       fs.writeFileSync(path.join(SHOTS_DIR, filename), Buffer.from(base64, 'base64'));
-      activity.screenshots.push({ userId, userName, filename, screenIndex: screenIndex || 1, screenName: screenName || `Screen ${screenIndex || 1}`, ts: now });
-      saveActivity(activity);
+      db.insertScreenshotRecord({ filename, organizationId, userId, userName, screenIndex: screenIndex || 1, screenName: screenName || `Screen ${screenIndex || 1}`, ts: now });
       return res.json({ ok: true, filename });
     } catch (e) {
       return res.status(500).json({ error: 'Failed to save screenshot' });
@@ -658,106 +671,80 @@ app.post('/api/activity', auth, (req, res) => {
   res.status(400).json({ error: 'Unknown type' });
 });
 
-// GET /api/activity/status — latest status per employee (manager sees own team, partner sees everyone)
 app.get('/api/activity/status', auth, managerOrAbove, (req, res) => {
-  const activity = loadActivity();
-  const db       = loadDB();
-  ensureRules(db);
+  const orgUsers = db.listUsersByOrg(req.user.organizationId);
+  const latestHb  = {}; for (const hb of db.latestHeartbeatsByOrg(req.user.organizationId)) latestHb[hb.userId] = hb;
+  const latestApp = {}; for (const a  of db.latestAppEventsByOrg(req.user.organizationId)) latestApp[a.userId] = a;
 
-  const latest = {};
-  for (const hb of activity.heartbeats) {
-    if (!latest[hb.userId] || new Date(hb.ts) > new Date(latest[hb.userId].ts))
-      latest[hb.userId] = hb;
-  }
-
-  const latestApp = {};
-  for (const a of activity.apps) {
-    if (!latestApp[a.userId] || new Date(a.ts) > new Date(latestApp[a.userId].ts))
-      latestApp[a.userId] = a;
-  }
-
-  const employees = visibleEmployees(db, req.user);
+  const employees = visibleEmployees(orgUsers, req.user);
   res.json(employees.map(u => {
-    const hb  = latest[u.id];
-    const ap  = latestApp[u.id];
+    const hb = latestHb[u.id];
+    const ap = latestApp[u.id];
     const online = hb && (Date.now() - new Date(hb.ts)) < 90 * 1000;
     return {
       userId: u.id, userName: u.name, email: u.email,
       online: !!online, lastSeen: hb?.ts || null,
       activityScore: hb?.activityScore ?? null, isIdle: hb?.isIdle ?? null, idleSecs: hb?.idleSecs ?? null,
       activeApp: ap?.appName || null, activeTitle: ap?.title || null, appTs: ap?.ts || null,
-      flag: ap ? classify(db, ap.appName, ap.title) : null,
+      flag: ap ? classify(req.user.organizationId, ap.appName, ap.title) : null,
     };
   }));
 });
 
-// ── Monitoring rules (manager only) ───────────────────────────────────────────
+// ── Monitoring rules ───────────────────────────────────────────────────────
 app.get('/api/settings/rules', auth, managerOrAbove, (req, res) => {
-  const db = loadDB();
-  const changed = ensureRules(db);
-  if (changed) saveDB(db);
-  res.json(db.rules);
+  res.json(ensureRules(req.user.organizationId));
 });
 
 app.put('/api/settings/rules', auth, managerOrAbove, (req, res) => {
   const { rules } = req.body;
   if (!Array.isArray(rules)) return res.status(400).json({ error: 'rules array required' });
-  const db = loadDB();
-  db.rules = rules
+  const clean = rules
     .filter(r => r && r.pattern && (r.category === 'work' || r.category === 'redflag'))
-    .map(r => ({ id: r.id || crypto.randomUUID(), pattern: r.pattern.trim(), category: r.category }));
-  saveDB(db);
-  res.json(db.rules);
+    .map(r => ({ id: r.id || crypto.randomUUID(), organizationId: req.user.organizationId, pattern: r.pattern.trim(), category: r.category }));
+  db.replaceRules(req.user.organizationId, clean);
+  res.json(clean);
 });
 
-// Merge in the suggested starter list without wiping custom rules already added
 app.post('/api/settings/rules/suggested', auth, managerOrAbove, (req, res) => {
-  const db = loadDB();
-  ensureRules(db);
-  const existing = new Set(db.rules.map(r => r.pattern.toLowerCase()));
+  const existingRules = ensureRules(req.user.organizationId);
+  const existing = new Set(existingRules.map(r => r.pattern.toLowerCase()));
+  const merged = [...existingRules];
   for (const s of SUGGESTED_RULES) {
     if (!existing.has(s.pattern.toLowerCase())) {
-      db.rules.push({ id: crypto.randomUUID(), ...s });
+      merged.push({ id: crypto.randomUUID(), organizationId: req.user.organizationId, ...s });
       existing.add(s.pattern.toLowerCase());
     }
   }
-  saveDB(db);
-  res.json(db.rules);
+  db.replaceRules(req.user.organizationId, merged);
+  res.json(merged);
 });
 
-// GET /api/activity/logs?date=YYYY-MM-DD (or from=&to=)&userId=xxx — heartbeat timeline.
-// Supports both a single day (?date=) and a day/week/month/custom range (?from=&to=).
 app.get('/api/activity/logs', auth, managerOrAbove, (req, res) => {
-  const db  = loadDB();
   const { from, to } = resolveRange(req);
-  const activity = loadActivity();
-  let hbs = activity.heartbeats.filter(h => tsInRange(h.ts, from, to));
+  let hbs = db.listHeartbeatsByOrgRange(req.user.organizationId, from, to);
   if (req.query.userId) {
-    const target = db.users.find(u => u.id === req.query.userId);
+    const target = db.findUserById(req.query.userId);
     if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
       return res.status(403).json({ error: 'Not allowed to view this user' });
     hbs = hbs.filter(h => h.userId === req.query.userId);
   } else if (req.user.role === 'manager') {
-    const ids = visibleEmployeeIds(db, req.user);
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
     hbs = hbs.filter(h => ids.has(h.userId));
   }
-  res.json(hbs.sort((a, b) => new Date(a.ts) - new Date(b.ts)));
+  res.json(hbs);
 });
 
-// GET /api/activity/appusage?date=YYYY-MM-DD (or from=&to=)&userId=xxx — top apps
 app.get('/api/activity/appusage', auth, managerOrAbove, (req, res) => {
-  const activity = loadActivity();
-  const db       = loadDB();
-  ensureRules(db);
   const { from, to } = resolveRange(req);
-  let apps = activity.apps.filter(a => tsInRange(a.ts, from, to));
+  let apps = db.listAppEventsByOrgRange(req.user.organizationId, from, to);
   if (req.query.userId) {
-    const target = db.users.find(u => u.id === req.query.userId);
+    const target = db.findUserById(req.query.userId);
     if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
       return res.status(403).json({ error: 'Not allowed to view this user' });
     apps = apps.filter(a => a.userId === req.query.userId);
   } else if (req.user.role === 'manager') {
-    const ids = visibleEmployeeIds(db, req.user);
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
     apps = apps.filter(a => ids.has(a.userId));
   }
   const counts = {};
@@ -765,9 +752,8 @@ app.get('/api/activity/appusage', auth, managerOrAbove, (req, res) => {
     const key = `${a.userId}|||${a.appName}`;
     if (!counts[key]) counts[key] = { count: 0, redflag: 0, work: 0 };
     counts[key].count++;
-    const cat = classify(db, a.appName, a.title);
-    if (cat === 'redflag') counts[key].redflag++;
-    else if (cat === 'work') counts[key].work++;
+    if (a.category === 'redflag') counts[key].redflag++;
+    else if (a.category === 'work') counts[key].work++;
   }
   res.json(Object.entries(counts)
     .map(([key, v]) => {
@@ -778,22 +764,118 @@ app.get('/api/activity/appusage', auth, managerOrAbove, (req, res) => {
     .sort((a, b) => b.count - a.count));
 });
 
-// GET /api/activity/screenshots?date=YYYY-MM-DD (or from=&to=)&userId=xxx — screenshot list
 app.get('/api/activity/screenshots', auth, managerOrAbove, (req, res) => {
-  const db  = loadDB();
   const { from, to } = resolveRange(req);
-  const activity = loadActivity();
-  let shots = activity.screenshots.filter(s => tsInRange(s.ts, from, to));
+  let shots = db.listScreenshotsByOrgRange(req.user.organizationId, from, to);
   if (req.query.userId) {
-    const target = db.users.find(u => u.id === req.query.userId);
+    const target = db.findUserById(req.query.userId);
     if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
       return res.status(403).json({ error: 'Not allowed to view this user' });
     shots = shots.filter(s => s.userId === req.query.userId);
   } else if (req.user.role === 'manager') {
-    const ids = visibleEmployeeIds(db, req.user);
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
     shots = shots.filter(s => ids.has(s.userId));
   }
-  res.json(shots.sort((a, b) => new Date(b.ts) - new Date(a.ts)));
+  res.json(shots);
+});
+
+// ── Evidence export ─────────────────────────────────────────────────────────
+// Downloadable reports/screenshots "for evidence if needed" — reuses the exact same
+// range + visibility scoping as the on-screen views above, just rendered to a file.
+function csvEscape(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+app.get('/api/reports/export', auth, managerOrAbove, (req, res) => {
+  const { from, to } = resolveRange(req);
+  let entries = db.listEntriesByOrg(req.user.organizationId, { from, to });
+  if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
+    ids.add(req.user.id);
+    entries = entries.filter(e => ids.has(e.userId));
+  }
+  entries = entries.slice().sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+
+  const format = req.query.format === 'pdf' ? 'pdf' : 'csv';
+  const rangeLabel = from === to ? from : `${from}_to_${to}`;
+
+  if (format === 'csv') {
+    const header = ['Employee', 'Project', 'Task', 'Start', 'End', 'Duration (min)', 'Activity Score', 'Screenshots', 'Status'];
+    const rows = entries.map(e => [
+      e.userName, e.project, e.task, e.startTime, e.endTime || '',
+      e.durationMs ? Math.round(e.durationMs / 60000) : '', e.activityScore ?? '', e.screenshotCount || 0, e.status,
+    ]);
+    const csv = [header, ...rows].map(r => r.map(csvEscape).join(',')).join('\r\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="wachadoin-report-${rangeLabel}.csv"`);
+    return res.send(csv);
+  }
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="wachadoin-report-${rangeLabel}.pdf"`);
+  const doc = new PDFDocument({ margin: 40, size: 'A4' });
+  doc.pipe(res);
+  doc.fontSize(18).text('Wachadoin Activity Report', { align: 'left' });
+  doc.fontSize(10).fillColor('#555').text(`Range: ${from} to ${to}  ·  Generated: ${new Date().toISOString()}`);
+  doc.moveDown();
+  doc.fillColor('#000');
+  const colX = [40, 160, 260, 350, 420, 470, 520];
+  const headers = ['Employee', 'Project', 'Task', 'Start', 'Mins', 'Score', 'Shots'];
+  doc.fontSize(9).font('Helvetica-Bold');
+  headers.forEach((h, i) => doc.text(h, colX[i], doc.y, { continued: i < headers.length - 1, width: 100 }));
+  doc.moveDown(0.5);
+  doc.font('Helvetica');
+  for (const e of entries) {
+    const y = doc.y;
+    doc.text(String(e.userName || '').slice(0, 18), colX[0], y, { width: 115 });
+    doc.text(String(e.project || '').slice(0, 18), colX[1], y, { width: 95 });
+    doc.text(String(e.task || '').slice(0, 14), colX[2], y, { width: 65 });
+    doc.text((e.startTime || '').replace('T', ' ').slice(0, 16), colX[3], y, { width: 65 });
+    doc.text(e.durationMs ? String(Math.round(e.durationMs / 60000)) : '-', colX[4], y, { width: 45 });
+    doc.text(e.activityScore ?? '-', colX[5], y, { width: 45 });
+    doc.text(String(e.screenshotCount || 0), colX[6], y, { width: 40 });
+    doc.moveDown(0.3);
+    if (doc.y > 760) doc.addPage();
+  }
+  if (entries.length === 0) doc.fontSize(10).fillColor('#777').text('No entries in this range.');
+  doc.end();
+});
+
+// ── Superadmin: manage client organizations & subscriptions ────────────────
+// Deliberately metadata-only (plan, seats, status) — never touches an org's users,
+// entries, or activity data. Real billing automation is Phase 2; for now plan/status
+// changes here are the manual lever until a payment gateway is wired up.
+app.get('/api/admin/orgs', auth, superAdminOnly, (req, res) => {
+  const orgs = db.listOrgs().filter(o => o.id !== PLATFORM_ORG_ID);
+  res.json(orgs.map(o => {
+    const users = db.listUsersByOrg(o.id);
+    return {
+      id: o.id, name: o.name, plan: o.plan, status: o.status, seatLimit: o.seatLimit,
+      permanentScreenshots: o.permanentScreenshots, createdAt: o.createdAt,
+      managerCount: users.filter(u => u.role === 'manager' || u.role === 'partner').length,
+      employeeCount: users.filter(u => u.role === 'employee' && u.active !== false).length,
+    };
+  }));
+});
+
+const ADMIN_PLANS = new Set(['starter', 'growth', 'firm', 'legacy-internal', 'trial']);
+const ADMIN_STATUSES = new Set(['trialing', 'active', 'past_due', 'canceled', 'internal']);
+app.patch('/api/admin/orgs/:id', auth, superAdminOnly, (req, res) => {
+  const org = db.getOrg(req.params.id);
+  if (!org || org.id === PLATFORM_ORG_ID) return res.status(404).json({ error: 'Organization not found' });
+  const { plan, seatLimit, permanentScreenshots, status } = req.body;
+  if (plan !== undefined && !ADMIN_PLANS.has(plan)) return res.status(400).json({ error: 'Invalid plan' });
+  if (status !== undefined && !ADMIN_STATUSES.has(status)) return res.status(400).json({ error: 'Invalid status' });
+  const updated = db.updateOrg({
+    id: org.id, name: org.name,
+    plan: plan ?? org.plan,
+    seatLimit: seatLimit !== undefined ? seatLimit : org.seatLimit,
+    permanentScreenshots: permanentScreenshots !== undefined ? !!permanentScreenshots : org.permanentScreenshots,
+    status: status ?? org.status,
+  });
+  res.json(updated);
 });
 
 // ── Start ──────────────────────────────────────────────────────
