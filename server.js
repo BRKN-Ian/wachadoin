@@ -375,22 +375,25 @@ app.post('/api/auth/register', auth, managerOrAbove, async (req, res) => {
   if (db.findUserByEmail(email)) return res.status(400).json({ error: 'Email already registered' });
 
   const orgUsers = db.listUsersByOrg(req.user.organizationId);
+  // Staff (employees) never get an invite/login — only Managers and Partners/
+  // Directors do, since they're the only roles that ever sign in to the dashboard.
   const wantsManager = role === 'manager' && req.user.role === 'partner';
-  if (role === 'manager' && req.user.role !== 'partner')
-    return res.status(403).json({ error: 'Only a partner/director can add a manager' });
+  const wantsPartner = role === 'partner' && req.user.role === 'partner';
+  if ((role === 'manager' || role === 'partner') && req.user.role !== 'partner')
+    return res.status(403).json({ error: 'Only a partner/director can add a manager or another partner/director' });
 
   let user, inviteLink;
-  if (wantsManager) {
+  if (wantsManager || wantsPartner) {
     // Invite-based, not partner-sets-the-password: the Partner no longer types
-    // (and therefore doesn't end up knowing) the new manager's password. The
+    // (and therefore doesn't end up knowing) the new person's password. The
     // account is created with no passwordHash and inviteStatus: 'pending';
-    // the manager sets their own password via the link, same token mechanism
+    // they set their own password via the link, same token mechanism
     // as /api/auth/forgot-password (see lib/tokens.js).
     const { raw, hash } = issueToken();
     const resetTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     user = db.insertUser({
       organizationId: req.user.organizationId, name: name.trim(), email: email.toLowerCase().trim(),
-      role: 'manager', inviteStatus: 'pending', resetTokenHash: hash, resetTokenExpiresAt,
+      role: wantsPartner ? 'partner' : 'manager', inviteStatus: 'pending', resetTokenHash: hash, resetTokenExpiresAt,
     });
     inviteLink = `${req.protocol}://${req.get('host')}/login?invite=${raw}`;
   } else {
@@ -402,13 +405,17 @@ app.post('/api/auth/register', auth, managerOrAbove, async (req, res) => {
   res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, managerId: user.managerId || null, inviteStatus: user.inviteStatus || null }, inviteLink });
 });
 
-// Regenerates a manager's invite link if the original was lost — same token
-// mechanism, just a fresh one issued (the old one, if still unused, stops
-// working the moment this overwrites its hash).
+// Regenerates a manager's or partner's invite link if the original was lost —
+// same token mechanism, just a fresh one issued (the old one, if still unused,
+// stops working the moment this overwrites its hash). Deliberately doesn't use
+// canManage() here: that helper blocks a partner from acting on another
+// partner's *active* account (deactivate/delete/agent-token), which is the
+// right protection for those actions but not for this one — reissuing a still-
+// pending invite doesn't touch anyone's existing access, so any partner in the
+// same org can do it for any pending manager OR partner invite.
 app.post('/api/users/:id/reissue-invite', auth, partnerOnly, (req, res) => {
   const user = db.findUserById(req.params.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
+  if (!user || user.organizationId !== req.user.organizationId) return res.status(404).json({ error: 'User not found' });
   if (user.inviteStatus !== 'pending') return res.status(400).json({ error: 'This account has already been activated' });
   if (rateLimited(`reissue:${user.id}`)) return res.status(429).json({ error: 'Too many attempts — try again in a few minutes.' });
   const { raw, hash } = issueToken();
@@ -533,7 +540,10 @@ app.get('/api/users', auth, managerOrAbove, (req, res) => {
 
   let visible;
   if (req.user.role === 'partner') {
-    visible = orgUsers.filter(u => u.role !== 'partner' || u.id === req.user.id);
+    // Now that a partner can invite peer partners/directors, they need to see
+    // them here too (previously this list dropped every partner but yourself,
+    // from back when an org only ever had one).
+    visible = orgUsers;
   } else {
     visible = [req.user, ...visibleEmployees(orgUsers, req.user)].map(u => orgUsers.find(x => x.id === u.id) || u);
   }
