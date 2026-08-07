@@ -618,15 +618,20 @@ tr:hover td { background: rgba(0,194,196,.05); }
           <div id="addOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
         </div>
 
-        <!-- Add manager form (partner/director only) -->
+        <!-- Add manager or partner/director form (partner/director only) -->
         <div class="card" id="addManagerCard" style="display:none">
-          <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Manager</h3>
-          <p style="font-size:12px;color:var(--dim);margin-bottom:2px">Managers log in to the dashboard and see the employees assigned to them. They'll set their own password via an invite link — you won't need to choose one for them.</p>
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Manager or Partner/Director</h3>
+          <p style="font-size:12px;color:var(--dim);margin-bottom:2px">Both log in to the dashboard — they'll set their own password via an invite link, so you won't need to choose one for them. Staff never need this; they're only ever tracked through their Agent Key.</p>
+          <label>Role</label>
+          <select id="newMgrRole" style="margin-bottom:14px">
+            <option value="manager">Manager</option>
+            <option value="partner">Partner / Director</option>
+          </select>
           <label>Full name</label>
           <input id="newMgrName"  type="text"  placeholder="Jane Smith">
           <label>Email address</label>
           <input id="newMgrEmail" type="email" placeholder="jane@yourcompany.com">
-          <button class="btn btn-primary" style="margin-top:4px" onclick="createManager()">Add Manager</button>
+          <button class="btn btn-primary" style="margin-top:4px" onclick="createManager()">Send invite</button>
           <div class="err-box" id="addMgrErr"></div>
           <div id="addMgrOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
           <div id="addMgrInviteResult" style="display:none;margin-top:10px">
@@ -1408,6 +1413,13 @@ function userRow(u, opts) {
           ? `<button class="btn btn-ghost btn-sm" title="Restores their dashboard login." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>`
           : `<button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red)" title="Blocks their dashboard login immediately. Their team and history are kept." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`)
       : '';
+  } else if (u.role === 'partner') {
+    // Partners/directors can't be deactivated or deleted from here (an org always
+    // needs at least one working partner login) — the only action that applies to
+    // a peer partner is reissuing their invite link while they're still pending.
+    actions = pending
+      ? `<button class="btn btn-ghost btn-sm" title="Regenerate and copy a fresh invite link — the old one stops working." onclick="reissueInvite('${u.id}','${nameEsc}')">Copy invite link</button>`
+      : (u.id === me.id ? '<span style="color:var(--dim);font-size:12px">You</span>' : '');
   } else {
     actions = inactive
       ? `<button class="btn btn-ghost btn-sm" title="Restores their login access. If a while has passed or the key was regenerated, get them a fresh Agent Key too." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>
@@ -1415,18 +1427,28 @@ function userRow(u, opts) {
       : `<button class="btn btn-ghost btn-sm" title="Get the download links, server URL, and personal setup key to install the agent on their computer." onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
          <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Use this when someone leaves: blocks their access and stops the agent immediately, but keeps their past activity on file." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
   }
-  const consentPill = u.consentRecordedAt
-    ? `<span class="pill pill-green" title="Recorded ${u.consentRecordedAt.slice(0,10)} by ${u.consentRecordedBy || 'unknown'}${u.consentNote ? ' — ' + u.consentNote.replace(/"/g,'&quot;') : ''}">Recorded ${u.consentRecordedAt.slice(0,10)}</span>`
-    : `<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="No record yet that this person was told about monitoring and consented outside the app.">Not yet recorded</span>`;
-  const consentBtn = `<button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="openConsentModal('${u.id}','${nameEsc}')">${u.consentRecordedAt ? 'Update' : 'Record'}</button>`;
+  // Offline consent tracking is for people who don't self-acknowledge in the app —
+  // partners/managers log in and see the POPIA notice themselves, so it's most
+  // meaningful for employees. Still shown for managers (existing behavior); skipped
+  // for partners since canManage() blocks a partner from recording it for a peer.
+  let consentCell = '';
+  if (u.role !== 'partner') {
+    const consentPill = u.consentRecordedAt
+      ? `<span class="pill pill-green" title="Recorded ${u.consentRecordedAt.slice(0,10)} by ${u.consentRecordedBy || 'unknown'}${u.consentNote ? ' — ' + u.consentNote.replace(/"/g,'&quot;') : ''}">Recorded ${u.consentRecordedAt.slice(0,10)}</span>`
+      : `<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="No record yet that this person was told about monitoring and consented outside the app.">Not yet recorded</span>`;
+    const consentBtn = `<button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="openConsentModal('${u.id}','${nameEsc}')">${u.consentRecordedAt ? 'Update' : 'Record'}</button>`;
+    consentCell = consentPill + consentBtn;
+  } else {
+    consentCell = '<span style="color:var(--dim)">—</span>';
+  }
 
   return `
   <tr style="${inactive ? 'opacity:.55' : ''}">
     <td>${u.name}</td>
     <td style="color:var(--dim)">${u.email}</td>
-    <td><span class="pill ${u.role === 'manager' ? 'pill-green' : 'pill-gray'}">${u.role}</span></td>
+    <td><span class="pill ${u.role === 'employee' ? 'pill-gray' : 'pill-green'}">${u.role === 'partner' ? 'partner/director' : u.role}</span></td>
     <td>${pending ? '<span class="pill" style="background:rgba(234,179,8,.18);color:#a16207" title="They haven\'t set a password yet — send them the invite link.">Invited — not yet activated</span>' : inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Access is blocked. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Active — can be tracked / can log in normally.">Active</span>'}</td>
-    <td style="white-space:nowrap">${consentPill}${consentBtn}</td>
+    <td style="white-space:nowrap">${consentCell}</td>
     <td style="text-align:right;white-space:nowrap">${actions}</td>
   </tr>`;
 }
@@ -1441,13 +1463,18 @@ async function loadUserList() {
   document.getElementById('userListTitle').textContent = me.role === 'partner' ? 'Everyone in the organization' : 'Current Employees';
 
   if (me.role === 'partner') {
+    const partners  = users.filter(u => u.role === 'partner');
     const managers  = users.filter(u => u.role === 'manager');
     const employees = users.filter(u => u.role === 'employee');
-    groupsEl.innerHTML = managers.map(mgr => {
+    const partnerSection = partners.length
+      ? `<div style="margin-bottom:18px"><h4 style="font-size:13px;color:var(--dim);margin-bottom:8px">Partners / Directors</h4>${userTable(partners.map(p => userRow(p, {})).join(''))}</div>`
+      : '';
+    const managerSection = managers.map(mgr => {
       const team = employees.filter(e => e.managerId === mgr.id);
       const rows = userRow(mgr, { canManageManagers: true }) + team.map(e => userRow(e, {})).join('');
       return `<div style="margin-bottom:18px"><h4 style="font-size:13px;color:var(--dim);margin-bottom:8px">Manager: ${mgr.name}${team.length ? ` — ${team.length} employee${team.length!==1?'s':''}` : ' — no employees yet'}</h4>${userTable(rows)}</div>`;
     }).join('') || `<div class="empty"><div class="ei">👥</div><p>No managers yet — add one above.</p></div>`;
+    groupsEl.innerHTML = partnerSection + managerSection;
   } else {
     const rows = users.filter(u => u.id !== me.id).map(u => userRow(u, {})).join('');
     groupsEl.innerHTML = rows
@@ -1592,6 +1619,7 @@ async function createEmployee() {
 async function createManager() {
   const name  = document.getElementById('newMgrName').value.trim();
   const email = document.getElementById('newMgrEmail').value.trim();
+  const role  = document.getElementById('newMgrRole').value; // 'manager' or 'partner'
   const err   = document.getElementById('addMgrErr');
   const ok    = document.getElementById('addMgrOk');
   const inviteResult = document.getElementById('addMgrInviteResult');
@@ -1602,12 +1630,13 @@ async function createManager() {
   const r = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-    body: JSON.stringify({ name, email, role: 'manager' }),
+    body: JSON.stringify({ name, email, role }),
   }).then(r => r.json());
 
   if (r.error) { err.textContent = r.error; err.style.display = 'block'; return; }
 
-  ok.textContent = `✓ ${name} added as a manager — not yet active. Send them the invite link below so they can set their own password.`;
+  const roleLabel = role === 'partner' ? 'a partner/director' : 'a manager';
+  ok.textContent = `✓ ${name} added as ${roleLabel} — not yet active. Send them the invite link below so they can set their own password.`;
   ok.style.display = 'block';
   if (r.inviteLink) {
     document.getElementById('addMgrInviteLink').textContent = r.inviteLink;
@@ -1616,7 +1645,7 @@ async function createManager() {
   document.getElementById('newMgrName').value  = '';
   document.getElementById('newMgrEmail').value = '';
   loadUserList();
-  // Refresh the "Reports to" dropdown on the Add Employee form so the new manager is selectable.
+  // Refresh the "Reports to" dropdown on the Add Employee form so a newly-added manager is selectable.
   api('/api/users').then(users => {
     const mgrSel = document.getElementById('newEmpManager');
     mgrSel.innerHTML = users.filter(u => u.role === 'manager').map(u => `<option value="${u.id}">${u.name}</option>`).join('');
