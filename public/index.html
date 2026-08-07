@@ -120,15 +120,21 @@
   .step p { font-size: 13.5px; color: var(--dim); line-height: 1.6; max-width: 260px; margin: 0 auto; }
 
   /* ── Pricing ─────────────────────────────────────────────────────── */
-  .currency-toggle {
-    display: inline-flex; align-items: center; gap: 2px; margin: 0 auto 40px; padding: 3px;
+  .toggle-row { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 40px; }
+  .currency-toggle, .billing-toggle {
+    display: inline-flex; align-items: center; gap: 2px; padding: 3px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
   }
-  .currency-toggle button {
+  .currency-toggle button, .billing-toggle button {
     border: none; background: none; color: var(--dim); font-size: 13px; font-weight: 600;
     padding: 7px 16px; border-radius: 999px; cursor: pointer;
   }
-  .currency-toggle button.active { background: var(--primary); color: #04222b; }
+  .currency-toggle button.active, .billing-toggle button.active { background: var(--primary); color: #04222b; }
+  .billing-toggle button .save-badge {
+    display: inline-block; margin-left: 6px; font-size: 10.5px; font-weight: 700;
+    background: rgba(0,194,196,.18); color: var(--primary); border-radius: 999px; padding: 1px 7px;
+  }
+  .billing-toggle button.active .save-badge { background: rgba(4,34,43,.25); color: #04222b; }
   .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; align-items: stretch; }
   .price-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
@@ -139,6 +145,7 @@
   .price-card .price-tagline { font-size: 13px; color: var(--dim); margin-bottom: 20px; min-height: 34px; }
   .price-amount { font-size: 38px; font-weight: 800; margin-bottom: 2px; }
   .price-amount .per { font-size: 13px; font-weight: 500; color: var(--dim); }
+  .price-annual-note { font-size: 12px; color: var(--primary); font-weight: 600; margin-bottom: 4px; min-height: 16px; }
   .price-note { font-size: 12px; color: var(--dim); margin-bottom: 22px; }
   .price-features { list-style: none; margin-bottom: 26px; flex: 1; }
   .price-features li { font-size: 13.5px; color: var(--dim); padding: 7px 0; border-top: 1px solid var(--border); }
@@ -323,19 +330,27 @@
     <div class="section-head">
       <div class="kicker">Pricing</div>
       <h2>Simple, per-employee pricing</h2>
-      <p>Billed monthly, cancel any time. Prices shown per active employee.</p>
+      <p>Pay monthly, or pay annually and save 10%. Cancel any time. Prices shown per active employee.</p>
     </div>
-    <div style="text-align:center">
+    <div class="toggle-row">
       <div class="currency-toggle" id="currencyToggle">
         <button class="active" data-cur="usd">USD ($)</button>
         <button data-cur="zar">ZAR (R)</button>
+      </div>
+      <div class="billing-toggle" id="billingToggle">
+        <button class="active" data-cycle="monthly">Monthly</button>
+        <button data-cycle="annual">Annual <span class="save-badge">Save 10%</span></button>
       </div>
     </div>
     <div class="pricing-grid">
       <div class="price-card">
         <h3>Starter</h3>
         <div class="price-tagline">For a single small team getting started.</div>
-        <div class="price-amount"><span class="amt" data-usd="$7" data-zar="R129">$7</span> <span class="per">/ employee / mo</span></div>
+        <div class="price-amount">
+          <span class="amt" data-usd-monthly="$7" data-usd-annual="$6.30" data-zar-monthly="R129" data-zar-annual="R116">$7</span>
+          <span class="per">/ employee / mo</span>
+        </div>
+        <div class="price-annual-note aa" data-usd-monthly="" data-usd-annual="Billed annually: $75.60/employee/yr — save $8.40" data-zar-monthly="" data-zar-annual="Billed annually: R1,393/employee/yr — save R155">&nbsp;</div>
         <div class="price-note">Up to 10 employees, 1 manager</div>
         <ul class="price-features">
           <li>Agent Key install — <strong>no staff login, ever</strong></li>
@@ -348,7 +363,11 @@
       <div class="price-card featured">
         <h3>Growth</h3>
         <div class="price-tagline">For firms with more than one manager.</div>
-        <div class="price-amount"><span class="amt" data-usd="$10" data-zar="R185">$10</span> <span class="per">/ employee / mo</span></div>
+        <div class="price-amount">
+          <span class="amt" data-usd-monthly="$10" data-usd-annual="$9.00" data-zar-monthly="R185" data-zar-annual="R167">$10</span>
+          <span class="per">/ employee / mo</span>
+        </div>
+        <div class="price-annual-note aa" data-usd-monthly="" data-usd-annual="Billed annually: $108.00/employee/yr — save $12.00" data-zar-monthly="" data-zar-annual="Billed annually: R1,998/employee/yr — save R222">&nbsp;</div>
         <div class="price-note">Unlimited employees &amp; managers</div>
         <ul class="price-features">
           <li>Everything in Starter</li>
@@ -361,7 +380,11 @@
       <div class="price-card">
         <h3>Firm</h3>
         <div class="price-tagline">For firms that need screenshots kept as long-term evidence.</div>
-        <div class="price-amount"><span class="amt" data-usd="$14" data-zar="R259">$14</span> <span class="per">/ employee / mo</span></div>
+        <div class="price-amount">
+          <span class="amt" data-usd-monthly="$14" data-usd-annual="$12.60" data-zar-monthly="R259" data-zar-annual="R233">$14</span>
+          <span class="per">/ employee / mo</span>
+        </div>
+        <div class="price-annual-note aa" data-usd-monthly="" data-usd-annual="Billed annually: $151.20/employee/yr — save $16.80" data-zar-monthly="" data-zar-annual="Billed annually: R2,797/employee/yr — save R311">&nbsp;</div>
         <div class="price-note">Everything in Growth, plus:</div>
         <ul class="price-features">
           <li><strong>Permanent screenshot storage</strong></li>
@@ -371,7 +394,7 @@
         <a class="btn btn-ghost" href="/signup" style="justify-content:center">Start free trial</a>
       </div>
     </div>
-    <p class="pricing-fineprint">ZAR prices are indicative, rounded for billing simplicity — not a live daily conversion. Need more seats or a custom contract? <a href="mailto:info@wachadoin.com" style="color:var(--primary)">Talk to us</a>.</p>
+    <p class="pricing-fineprint">ZAR prices are indicative, rounded for billing simplicity — not a live daily conversion. Annual billing is prepaid for the year at a 10% discount off the monthly rate. Need more seats or a custom contract? <a href="mailto:info@wachadoin.com" style="color:var(--primary)">Talk to us</a>.</p>
   </div>
 </section>
 
@@ -435,17 +458,42 @@
 <script>
 document.getElementById('year').textContent = new Date().getFullYear();
 
-// Display-only USD/ZAR toggle for the pricing section — no live FX call, no billing
-// logic; just swaps which pre-set amount is shown. Real billing (Phase 2) will decide
-// a customer's actual currency at checkout.
+// Display-only USD/ZAR + Monthly/Annual toggles for the pricing section — no live FX
+// call, no billing logic; just swaps which pre-set amount/note is shown. Every price
+// card carries all 4 combinations (usd/zar × monthly/annual) as data attributes, so
+// switching either toggle just re-reads them for the currently-selected pair. Real
+// billing (Phase 2) will decide a customer's actual currency and charge at checkout;
+// picking "Annual" here is purely informational until then (the actual choice is
+// made and stored at signup).
+let pricingCur = 'usd', pricingCycle = 'monthly';
+function applyPricing() {
+  const key = pricingCur + pricingCycle[0].toUpperCase() + pricingCycle.slice(1); // e.g. 'usdAnnual'
+  document.querySelectorAll('.amt, .aa').forEach(el => {
+    const val = el.dataset[key];
+    if (el.classList.contains('aa')) {
+      el.textContent = val || ' '; // keep the note's height stable when blank
+    } else {
+      el.textContent = val;
+    }
+  });
+}
 document.getElementById('currencyToggle').addEventListener('click', e => {
   const btn = e.target.closest('button');
   if (!btn) return;
   document.querySelectorAll('#currencyToggle button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  const cur = btn.dataset.cur;
-  document.querySelectorAll('.amt').forEach(el => { el.textContent = el.dataset[cur]; });
+  pricingCur = btn.dataset.cur;
+  applyPricing();
 });
+document.getElementById('billingToggle').addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  document.querySelectorAll('#billingToggle button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  pricingCycle = btn.dataset.cycle;
+  applyPricing();
+});
+applyPricing(); // sync display with the default toggle state (USD / Monthly) on load
 </script>
 </body>
 </html>

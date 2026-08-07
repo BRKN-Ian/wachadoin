@@ -424,9 +424,14 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <input id="suPass" type="password" placeholder="At least 8 characters" autocomplete="new-password">
       <label>Plan</label>
       <select id="suPlan" style="display:block;width:100%;margin-bottom:14px">
-        <option value="starter">Starter — $7 / employee / mo</option>
-        <option value="growth" selected>Growth — $10 / employee / mo</option>
-        <option value="firm">Firm — $14 / employee / mo</option>
+        <option value="starter" data-monthly="Starter — $7 / employee / mo" data-annual="Starter — $6.30 / employee / mo, billed annually">Starter — $7 / employee / mo</option>
+        <option value="growth" data-monthly="Growth — $10 / employee / mo" data-annual="Growth — $9.00 / employee / mo, billed annually" selected>Growth — $10 / employee / mo</option>
+        <option value="firm" data-monthly="Firm — $14 / employee / mo" data-annual="Firm — $12.60 / employee / mo, billed annually">Firm — $14 / employee / mo</option>
+      </select>
+      <label>Billing</label>
+      <select id="suBilling" style="display:block;width:100%;margin-bottom:14px">
+        <option value="monthly" selected>Monthly</option>
+        <option value="annual">Annual — save 10%, prepaid for the year</option>
       </select>
       <button class="btn btn-primary" id="btnSignup">Create my account</button>
       <div class="err-box" id="signupErr"></div>
@@ -468,7 +473,7 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <div class="stat-grid" id="orgsStats"></div>
       <div class="card">
         <table>
-          <thead><tr><th>Firm</th><th>Plan</th><th>Status</th><th>Managers</th><th>Employees</th><th>Permanent screenshots</th><th>Since</th></tr></thead>
+          <thead><tr><th>Firm</th><th>Plan</th><th>Billing</th><th>Status</th><th>Managers</th><th>Employees</th><th>Permanent screenshots</th><th>Since</th></tr></thead>
           <tbody id="orgsBody"></tbody>
         </table>
       </div>
@@ -954,12 +959,23 @@ document.getElementById('btnAcceptInvite').addEventListener('click', async () =>
   }
 });
 
+// Live-updates each Plan option's price label when the Billing cycle toggle changes,
+// so "Annual" always shows the actual discounted rate rather than making someone
+// pick a plan first and only learn the annual price after signing up.
+document.getElementById('suBilling').addEventListener('change', () => {
+  const cycle = document.getElementById('suBilling').value; // 'monthly' | 'annual'
+  document.querySelectorAll('#suPlan option').forEach(opt => {
+    opt.textContent = opt.dataset[cycle] || opt.dataset.monthly;
+  });
+});
+
 document.getElementById('btnSignup').addEventListener('click', async () => {
   const orgName = document.getElementById('suOrgName').value.trim();
   const name    = document.getElementById('suName').value.trim();
   const email   = document.getElementById('suEmail').value.trim();
   const pass    = document.getElementById('suPass').value;
   const plan    = document.getElementById('suPlan').value;
+  const billingCycle = document.getElementById('suBilling').value;
   const err     = document.getElementById('signupErr');
   const btn     = document.getElementById('btnSignup');
   err.style.display = 'none';
@@ -971,7 +987,7 @@ document.getElementById('btnSignup').addEventListener('click', async () => {
     const r = await fetch('/api/auth/signup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgName, name, email, password: pass, plan }),
+      body: JSON.stringify({ orgName, name, email, password: pass, plan, billingCycle }),
     }).then(r => r.json());
     if (!r.token) throw new Error(r.error || 'Sign-up failed');
     token = r.token; me = r.user;
@@ -1708,8 +1724,9 @@ function initSuperAdminApp() {
   loadOrgs();
 }
 
-const PLAN_LABEL   = { starter:'Starter', growth:'Growth', firm:'Firm', 'legacy-internal':'Legacy (internal)', trial:'Trial', platform:'Platform' };
-const STATUS_LABEL = { trialing:'Trialing', active:'Active', past_due:'Past due', canceled:'Canceled', internal:'Internal' };
+const PLAN_LABEL    = { starter:'Starter', growth:'Growth', firm:'Firm', 'legacy-internal':'Legacy (internal)', trial:'Trial', platform:'Platform' };
+const STATUS_LABEL  = { trialing:'Trialing', active:'Active', past_due:'Past due', canceled:'Canceled', internal:'Internal' };
+const BILLING_LABEL = { monthly:'Monthly', annual:'Annual (10% off)' };
 
 async function loadOrgs() {
   try {
@@ -1731,13 +1748,17 @@ function renderOrgStats(orgs) {
 }
 
 function renderOrgs(orgs) {
-  const planOpts   = Object.keys(PLAN_LABEL).filter(p => p !== 'platform');
-  const statusOpts = Object.keys(STATUS_LABEL);
+  const planOpts    = Object.keys(PLAN_LABEL).filter(p => p !== 'platform');
+  const statusOpts  = Object.keys(STATUS_LABEL);
+  const billingOpts = Object.keys(BILLING_LABEL);
   document.getElementById('orgsBody').innerHTML = orgs.map(o => `
     <tr>
       <td>${o.name}</td>
       <td><select onchange="patchOrg('${o.id}',{plan:this.value})">
         ${planOpts.map(p => `<option value="${p}" ${p===o.plan?'selected':''}>${PLAN_LABEL[p]}</option>`).join('')}
+      </select></td>
+      <td><select onchange="patchOrg('${o.id}',{billingCycle:this.value})" title="Whether this firm is paying monthly, or prepaid annually at 10% off.">
+        ${billingOpts.map(b => `<option value="${b}" ${b===(o.billingCycle||'monthly')?'selected':''}>${BILLING_LABEL[b]}</option>`).join('')}
       </select></td>
       <td><select onchange="patchOrg('${o.id}',{status:this.value})">
         ${statusOpts.map(s => `<option value="${s}" ${s===o.status?'selected':''}>${STATUS_LABEL[s]}</option>`).join('')}
@@ -1747,7 +1768,7 @@ function renderOrgs(orgs) {
       <td><input type="checkbox" ${o.permanentScreenshots?'checked':''} onchange="patchOrg('${o.id}',{permanentScreenshots:this.checked})"></td>
       <td>${new Date(o.createdAt).toLocaleDateString()}</td>
     </tr>
-  `).join('') || '<tr><td colspan="7"><div class="empty"><div class="ei">🏢</div><p>No client firms have signed up yet.</p></div></td></tr>';
+  `).join('') || '<tr><td colspan="8"><div class="empty"><div class="ei">🏢</div><p>No client firms have signed up yet.</p></div></td></tr>';
 }
 
 async function patchOrg(id, fields) {
