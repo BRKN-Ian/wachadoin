@@ -95,6 +95,27 @@
   .section-head h2 { font-size: 30px; font-weight: 800; letter-spacing: -.3px; margin-bottom: 12px; }
   .section-head p { color: var(--dim); font-size: 15px; }
 
+  /* ── Talent-war banner ───────────────────────────────────────────────
+     A single benefit pulled out of the features grid and promoted to a
+     standalone, ad-like banner right under the hero — the six other
+     benefits stay exactly as they were, just one card down. */
+  .talent-banner-section { padding: 0 0 24px; }
+  .talent-banner {
+    display: flex; align-items: center; gap: 30px;
+    background: linear-gradient(135deg, rgba(0,194,196,.18), rgba(10,58,99,.55));
+    border: 1px solid var(--primary); border-radius: 18px;
+    padding: 34px 40px;
+  }
+  .talent-banner-icon {
+    font-size: 44px; flex-shrink: 0; width: 76px; height: 76px; border-radius: 16px;
+    background: rgba(0,194,196,.16); display: flex; align-items: center; justify-content: center;
+  }
+  .talent-banner-copy { flex: 1; min-width: 0; }
+  .talent-banner-kicker { color: var(--primary); font-size: 12px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; margin-bottom: 6px; }
+  .talent-banner-copy h2 { font-size: 25px; font-weight: 800; letter-spacing: -.3px; margin-bottom: 8px; }
+  .talent-banner-copy p { color: var(--dim); font-size: 14.5px; line-height: 1.6; max-width: 640px; }
+  .talent-banner-cta { flex-shrink: 0; white-space: nowrap; }
+
   /* ── Features ────────────────────────────────────────────────────── */
   .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
   .feature-card {
@@ -195,12 +216,14 @@
     .steps { grid-template-columns: 1fr; gap: 34px; }
     .hp-stats { grid-template-columns: repeat(2, 1fr); }
     .pricing-grid { grid-template-columns: 1fr; }
+    .talent-banner { flex-direction: column; text-align: center; padding: 30px 26px; }
   }
   @media (max-width: 600px) {
     h1.hero-title { font-size: 32px; }
     .features { grid-template-columns: 1fr; }
     .compliance { flex-direction: column; text-align: center; }
     .nav-links .link { display: none; }
+    .talent-banner-copy h2 { font-size: 21px; }
   }
 </style>
 </head>
@@ -248,6 +271,21 @@
   </div>
 </section>
 
+<!-- ── Talent-war banner ────────────────────────────────────────────────── -->
+<section class="talent-banner-section">
+  <div class="wrap">
+    <div class="talent-banner">
+      <div class="talent-banner-icon">🌍</div>
+      <div class="talent-banner-copy">
+        <div class="talent-banner-kicker">Why firms choose Wachadoin</div>
+        <h2>Win the remote-talent war</h2>
+        <p>Offer real remote flexibility without losing oversight — so your firm can compete for skilled staff who'd otherwise take a fully-remote offer elsewhere.</p>
+      </div>
+      <a class="btn btn-primary btn-lg talent-banner-cta" href="/signup">Start your free trial</a>
+    </div>
+  </div>
+</section>
+
 <!-- ── Features ─────────────────────────────────────────────────────────── -->
 <section id="features">
   <div class="wrap">
@@ -286,11 +324,6 @@
         <div class="feature-icon">👥</div>
         <h3>Effortless onboarding</h3>
         <p>Add someone, hand them a download link and a personal Agent Key, and they're being tracked in minutes — no login required, ever.</p>
-      </div>
-      <div class="feature-card" style="grid-column: 1 / -1;">
-        <div class="feature-icon">🌍</div>
-        <h3>Win the remote-talent war</h3>
-        <p>Offer real remote flexibility without losing oversight — so your firm can compete for skilled staff who'd otherwise take a fully-remote offer elsewhere.</p>
       </div>
     </div>
   </div>
