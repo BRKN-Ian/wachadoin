@@ -140,27 +140,33 @@ function open(dataDir) {
   ensureColumn('users', 'consentRecordedAt', 'TEXT');
   ensureColumn('users', 'consentRecordedBy', 'TEXT');
   ensureColumn('users', 'consentNote', 'TEXT');
+  // 'monthly' (default) or 'annual' — annual is prepaid for the year at a 10%
+  // discount off the monthly rate. Metadata only, same as plan/status/seatLimit
+  // above: no payment gateway exists yet, so this doesn't itself charge anyone
+  // anything — it's what Acute's back office (and, later, real billing) goes by.
+  ensureColumn('organizations', 'billingCycle', 'TEXT');
 
   // ── Organizations ────────────────────────────────────────────────────────
   const stmtInsertOrg = db.prepare(`INSERT INTO organizations
-    (id, name, plan, seatLimit, permanentScreenshots, status, createdAt)
-    VALUES (@id, @name, @plan, @seatLimit, @permanentScreenshots, @status, @createdAt)`);
+    (id, name, plan, seatLimit, permanentScreenshots, status, billingCycle, createdAt)
+    VALUES (@id, @name, @plan, @seatLimit, @permanentScreenshots, @status, @billingCycle, @createdAt)`);
   const stmtGetOrg = db.prepare(`SELECT * FROM organizations WHERE id = ?`);
   const stmtListOrgs = db.prepare(`SELECT * FROM organizations ORDER BY createdAt ASC`);
   const stmtUpdateOrg = db.prepare(`UPDATE organizations SET
-    name=@name, plan=@plan, seatLimit=@seatLimit, permanentScreenshots=@permanentScreenshots, status=@status
+    name=@name, plan=@plan, seatLimit=@seatLimit, permanentScreenshots=@permanentScreenshots, status=@status, billingCycle=@billingCycle
     WHERE id=@id`);
 
   function rowToOrg(r) {
     if (!r) return null;
-    return { ...r, permanentScreenshots: !!r.permanentScreenshots };
+    return { ...r, permanentScreenshots: !!r.permanentScreenshots, billingCycle: r.billingCycle || 'monthly' };
   }
 
-  function createOrg({ id, name, plan, seatLimit, permanentScreenshots, status }) {
+  function createOrg({ id, name, plan, seatLimit, permanentScreenshots, status, billingCycle }) {
     const row = {
       id: id || crypto.randomUUID(), name, plan: plan || 'trial',
       seatLimit: seatLimit ?? null, permanentScreenshots: permanentScreenshots ? 1 : 0,
-      status: status || 'trialing', createdAt: new Date().toISOString(),
+      status: status || 'trialing', billingCycle: billingCycle === 'annual' ? 'annual' : 'monthly',
+      createdAt: new Date().toISOString(),
     };
     stmtInsertOrg.run(row);
     return rowToOrg(row);
@@ -168,7 +174,7 @@ function open(dataDir) {
   function getOrg(id) { return rowToOrg(stmtGetOrg.get(id)); }
   function listOrgs() { return stmtListOrgs.all().map(rowToOrg); }
   function updateOrg(org) {
-    stmtUpdateOrg.run({ ...org, permanentScreenshots: org.permanentScreenshots ? 1 : 0 });
+    stmtUpdateOrg.run({ ...org, permanentScreenshots: org.permanentScreenshots ? 1 : 0, billingCycle: org.billingCycle === 'annual' ? 'annual' : 'monthly' });
     return getOrg(org.id);
   }
 

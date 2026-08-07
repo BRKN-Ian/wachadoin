@@ -447,18 +447,23 @@ app.post('/api/auth/accept-invite', async (req, res) => {
 const PUBLIC_PLANS = new Set(['starter', 'growth', 'firm']);
 app.post('/api/auth/signup', async (req, res) => {
   const { orgName, name, email, password } = req.body;
-  let { plan } = req.body;
+  let { plan, billingCycle } = req.body;
   if (!orgName || !name || !email || !password) return res.status(400).json({ error: 'Firm name, your name, email and password are required' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
   if (db.findUserByEmail(email)) return res.status(400).json({ error: 'Email already registered' });
   if (!PUBLIC_PLANS.has(plan)) plan = 'starter';
+  // Annual billing is prepaid for the year at a 10% discount off the monthly rate.
+  // No payment gateway exists yet (that's Phase 2), so this is just the customer's
+  // stated preference for now — Acute's back office (see /api/admin/orgs below)
+  // uses it to know how to invoice once real billing is wired up.
+  billingCycle = billingCycle === 'annual' ? 'annual' : 'monthly';
 
-  const org = db.createOrg({ name: orgName.trim(), plan, seatLimit: null, permanentScreenshots: false, status: 'trialing' });
+  const org = db.createOrg({ name: orgName.trim(), plan, seatLimit: null, permanentScreenshots: false, status: 'trialing', billingCycle });
   const passwordHash = await bcrypt.hash(password, 10);
   const partner = db.insertUser({ organizationId: org.id, name: name.trim(), email: email.toLowerCase().trim(), passwordHash, role: 'partner' });
 
   const token = jwt.sign({ id: partner.id, name: partner.name, email: partner.email, role: partner.role, organizationId: org.id }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { id: org.id, name: org.name, plan: org.plan, status: org.status } });
+  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { id: org.id, name: org.name, plan: org.plan, status: org.status, billingCycle: org.billingCycle } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -990,7 +995,7 @@ app.get('/api/admin/orgs', auth, superAdminOnly, (req, res) => {
     const users = db.listUsersByOrg(o.id);
     return {
       id: o.id, name: o.name, plan: o.plan, status: o.status, seatLimit: o.seatLimit,
-      permanentScreenshots: o.permanentScreenshots, createdAt: o.createdAt,
+      permanentScreenshots: o.permanentScreenshots, billingCycle: o.billingCycle, createdAt: o.createdAt,
       managerCount: users.filter(u => u.role === 'manager' || u.role === 'partner').length,
       employeeCount: users.filter(u => u.role === 'employee' && u.active !== false).length,
     };
@@ -999,18 +1004,21 @@ app.get('/api/admin/orgs', auth, superAdminOnly, (req, res) => {
 
 const ADMIN_PLANS = new Set(['starter', 'growth', 'firm', 'legacy-internal', 'trial']);
 const ADMIN_STATUSES = new Set(['trialing', 'active', 'past_due', 'canceled', 'internal']);
+const ADMIN_BILLING_CYCLES = new Set(['monthly', 'annual']);
 app.patch('/api/admin/orgs/:id', auth, superAdminOnly, (req, res) => {
   const org = db.getOrg(req.params.id);
   if (!org || org.id === PLATFORM_ORG_ID) return res.status(404).json({ error: 'Organization not found' });
-  const { plan, seatLimit, permanentScreenshots, status } = req.body;
+  const { plan, seatLimit, permanentScreenshots, status, billingCycle } = req.body;
   if (plan !== undefined && !ADMIN_PLANS.has(plan)) return res.status(400).json({ error: 'Invalid plan' });
   if (status !== undefined && !ADMIN_STATUSES.has(status)) return res.status(400).json({ error: 'Invalid status' });
+  if (billingCycle !== undefined && !ADMIN_BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ error: 'Invalid billing cycle' });
   const updated = db.updateOrg({
     id: org.id, name: org.name,
     plan: plan ?? org.plan,
     seatLimit: seatLimit !== undefined ? seatLimit : org.seatLimit,
     permanentScreenshots: permanentScreenshots !== undefined ? !!permanentScreenshots : org.permanentScreenshots,
     status: status ?? org.status,
+    billingCycle: billingCycle ?? org.billingCycle,
   });
   res.json(updated);
 });
