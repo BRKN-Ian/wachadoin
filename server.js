@@ -7,6 +7,7 @@ const jwt      = require('jsonwebtoken');
 const archiver = require('archiver');
 const PDFDocument = require('pdfkit');
 const dbLib    = require('./db');
+const { issueToken, hashToken, verifyToken, rateLimited } = require('./lib/tokens');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -377,19 +378,59 @@ app.post('/api/auth/register', auth, managerOrAbove, async (req, res) => {
   const wantsManager = role === 'manager' && req.user.role === 'partner';
   if (role === 'manager' && req.user.role !== 'partner')
     return res.status(403).json({ error: 'Only a partner/director can add a manager' });
-  if (wantsManager && !password) return res.status(400).json({ error: 'Password is required for a manager account' });
 
-  let user;
+  let user, inviteLink;
   if (wantsManager) {
-    const passwordHash = await bcrypt.hash(password, 10);
-    user = db.insertUser({ organizationId: req.user.organizationId, name: name.trim(), email: email.toLowerCase().trim(), passwordHash, role: 'manager' });
+    // Invite-based, not partner-sets-the-password: the Partner no longer types
+    // (and therefore doesn't end up knowing) the new manager's password. The
+    // account is created with no passwordHash and inviteStatus: 'pending';
+    // the manager sets their own password via the link, same token mechanism
+    // as /api/auth/forgot-password (see lib/tokens.js).
+    const { raw, hash } = issueToken();
+    const resetTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    user = db.insertUser({
+      organizationId: req.user.organizationId, name: name.trim(), email: email.toLowerCase().trim(),
+      role: 'manager', inviteStatus: 'pending', resetTokenHash: hash, resetTokenExpiresAt,
+    });
+    inviteLink = `${req.protocol}://${req.get('host')}/login?invite=${raw}`;
   } else {
     let assignedManagerId = req.user.role === 'manager' ? req.user.id : managerId;
     const mgr = orgUsers.find(u => u.id === assignedManagerId && u.role === 'manager');
     if (!mgr) return res.status(400).json({ error: 'A valid manager must be chosen for this employee' });
     user = db.insertUser({ organizationId: req.user.organizationId, name: name.trim(), email: email.toLowerCase().trim(), role: 'employee', managerId: mgr.id });
   }
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, managerId: user.managerId || null } });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, managerId: user.managerId || null, inviteStatus: user.inviteStatus || null }, inviteLink });
+});
+
+// Regenerates a manager's invite link if the original was lost — same token
+// mechanism, just a fresh one issued (the old one, if still unused, stops
+// working the moment this overwrites its hash).
+app.post('/api/users/:id/reissue-invite', auth, partnerOnly, (req, res) => {
+  const user = db.findUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
+  if (user.inviteStatus !== 'pending') return res.status(400).json({ error: 'This account has already been activated' });
+  if (rateLimited(`reissue:${user.id}`)) return res.status(429).json({ error: 'Too many attempts — try again in a few minutes.' });
+  const { raw, hash } = issueToken();
+  const resetTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  db.updateUser({ ...user, resetTokenHash: hash, resetTokenExpiresAt });
+  res.json({ inviteLink: `${req.protocol}://${req.get('host')}/login?invite=${raw}` });
+});
+
+// Completes a manager invite: sets their own password and activates the
+// account. Public (no auth token yet — the invite token itself is the proof).
+app.post('/api/auth/accept-invite', async (req, res) => {
+  const { token: raw, password } = req.body || {};
+  if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  const hash = hashToken(String(raw || ''));
+  const user = db.findUserByResetToken(hash);
+  if (!user || !verifyToken(raw, user.resetTokenHash, user.resetTokenExpiresAt)) {
+    return res.status(400).json({ error: 'This invite link is invalid or has expired — ask your partner to resend it.' });
+  }
+  const passwordHash = await bcrypt.hash(password, 10);
+  db.updateUser({ ...user, passwordHash, resetTokenHash: null, resetTokenExpiresAt: null, inviteStatus: null });
+  const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
 // Public self-serve signup: creates a brand-new organization plus its first Partner
@@ -418,12 +459,54 @@ app.post('/api/auth/login', async (req, res) => {
   const user = db.findUserByEmail(email);
   if (user && user.role === 'employee')
     return res.status(403).json({ error: "Staff accounts don't have a dashboard login — ask your manager for your Agent Key instead." });
+  if (user && !user.passwordHash && user.inviteStatus === 'pending')
+    return res.status(403).json({ error: "This account hasn't been activated yet — check your invite link, or ask your partner to resend it." });
   if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash)))
     return res.status(401).json({ error: 'Invalid email or password' });
   if (user.active === false)
     return res.status(403).json({ error: 'This account has been deactivated. Contact your manager.' });
   const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, popiaAcknowledgedAt: user.popiaAcknowledgedAt || null } });
+});
+
+// Self-service password reset. There's no transactional email provider wired
+// up yet, so the reset link is handed back directly in the response instead
+// of being emailed — a deliberate, temporary stopgap (see resetLink below).
+// Swapping in real email later is a one-line change: stop returning resetLink
+// and call a sendEmail() with it instead. The token itself is unaffected.
+app.post('/api/auth/forgot-password', (req, res) => {
+  const email = (req.body?.email || '').toString();
+  if (rateLimited(`forgot:${email.toLowerCase()}`)) {
+    return res.status(429).json({ error: 'Too many attempts — try again in a few minutes.' });
+  }
+  const user = db.findUserByEmail(email);
+  // Always return 200 with the same shape whether or not the account exists,
+  // so this endpoint can't be used to enumerate registered emails.
+  const response = { ok: true };
+  if (user && user.role !== 'employee' && user.active !== false) {
+    const { raw, hash } = issueToken();
+    const resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    db.updateUser({ ...user, resetTokenHash: hash, resetTokenExpiresAt });
+    // STOPGAP: no email provider configured yet — hand the link straight back.
+    response.resetLink = `${req.protocol}://${req.get('host')}/login?reset=${raw}`;
+  }
+  res.json(response);
+});
+
+app.post('/api/auth/reset-password', (req, res) => {
+  const { token: raw, password } = req.body || {};
+  if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  const hash = hashToken(String(raw || ''));
+  const user = db.findUserByResetToken(hash);
+  if (!user || !verifyToken(raw, user.resetTokenHash, user.resetTokenExpiresAt)) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired — request a new one.' });
+  }
+  const passwordHash = bcrypt.hashSync(password, 10);
+  // Also clears inviteStatus: this token column is shared with the manager-invite
+  // flow (POST /api/auth/accept-invite), so a still-pending invite that gets
+  // completed through this endpoint instead shouldn't stay stuck as "pending".
+  db.updateUser({ ...user, passwordHash, resetTokenHash: null, resetTokenExpiresAt: null, inviteStatus: null });
+  res.json({ ok: true });
 });
 
 app.post('/api/auth/popia-ack', auth, (req, res) => {
@@ -457,6 +540,8 @@ app.get('/api/users', auth, managerOrAbove, (req, res) => {
   res.json(visible.map(u => ({
     id: u.id, name: u.name, email: u.email, role: u.role, active: u.active !== false,
     managerId: u.managerId || null, managerName: u.role === 'employee' ? mgrName(u.managerId) : null,
+    inviteStatus: u.inviteStatus || null,
+    consentRecordedAt: u.consentRecordedAt || null, consentRecordedBy: u.consentRecordedBy || null, consentNote: u.consentNote || null,
   })));
 });
 
@@ -494,6 +579,21 @@ app.post('/api/users/:id/reactivate', auth, managerOrAbove, (req, res) => {
   if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
   db.updateUser({ ...user, active: true, deactivatedAt: null });
   res.json({ ok: true, active: true });
+});
+
+// Records that a subordinate (who may never log in themselves, e.g. an
+// employee) was given written notice about monitoring and consented outside
+// the app — a signed form, an email, whatever the firm actually did. This is
+// deliberately separate from /api/auth/popia-ack, which only ever records
+// the logged-in dashboard user clicking through the notice for themselves.
+app.post('/api/users/:id/consent', auth, managerOrAbove, (req, res) => {
+  const user = db.findUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
+  const note = (req.body?.note || '').toString().slice(0, 500);
+  const consentRecordedAt = new Date().toISOString();
+  db.updateUser({ ...user, consentRecordedAt, consentRecordedBy: req.user.name, consentNote: note });
+  res.json({ ok: true, consentRecordedAt, consentRecordedBy: req.user.name, consentNote: note });
 });
 
 app.delete('/api/users/:id', auth, managerOrAbove, (req, res) => {
@@ -801,12 +901,21 @@ app.get('/api/reports/export', auth, managerOrAbove, (req, res) => {
   const format = req.query.format === 'pdf' ? 'pdf' : 'csv';
   const rangeLabel = from === to ? from : `${from}_to_${to}`;
 
+  // Consent is a per-person attribute, not a per-entry one — look each
+  // employee up once rather than re-fetching per row.
+  const usersById = new Map(db.listUsersByOrg(req.user.organizationId).map(u => [u.id, u]));
+  const consentFor = userId => usersById.get(userId) || {};
+
   if (format === 'csv') {
-    const header = ['Employee', 'Project', 'Task', 'Start', 'End', 'Duration (min)', 'Activity Score', 'Screenshots', 'Status'];
-    const rows = entries.map(e => [
-      e.userName, e.project, e.task, e.startTime, e.endTime || '',
-      e.durationMs ? Math.round(e.durationMs / 60000) : '', e.activityScore ?? '', e.screenshotCount || 0, e.status,
-    ]);
+    const header = ['Employee', 'Project', 'Task', 'Start', 'End', 'Duration (min)', 'Activity Score', 'Screenshots', 'Status', 'Consent Recorded', 'Consent Recorded By', 'Consent Note'];
+    const rows = entries.map(e => {
+      const c = consentFor(e.userId);
+      return [
+        e.userName, e.project, e.task, e.startTime, e.endTime || '',
+        e.durationMs ? Math.round(e.durationMs / 60000) : '', e.activityScore ?? '', e.screenshotCount || 0, e.status,
+        c.consentRecordedAt || '', c.consentRecordedBy || '', c.consentNote || '',
+      ];
+    });
     const csv = [header, ...rows].map(r => r.map(csvEscape).join(',')).join('\r\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="wachadoin-report-${rangeLabel}.csv"`);
@@ -820,7 +929,25 @@ app.get('/api/reports/export', auth, managerOrAbove, (req, res) => {
   doc.fontSize(18).text('Wachadoin Activity Report', { align: 'left' });
   doc.fontSize(10).fillColor('#555').text(`Range: ${from} to ${to}  ·  Generated: ${new Date().toISOString()}`);
   doc.moveDown();
-  doc.fillColor('#000');
+
+  // Consent status per employee, once — not per row, since it's a per-person
+  // fact and the entry table below can have many rows per employee.
+  const employeeIds = [...new Set(entries.map(e => e.userId))];
+  if (employeeIds.length) {
+    doc.fillColor('#000').fontSize(11).font('Helvetica-Bold').text('Monitoring consent on file');
+    doc.font('Helvetica').fontSize(9);
+    for (const id of employeeIds) {
+      const c = consentFor(id);
+      const name = c.name || entries.find(e => e.userId === id)?.userName || id;
+      const status = c.consentRecordedAt
+        ? `Recorded ${c.consentRecordedAt.slice(0, 10)} by ${c.consentRecordedBy || 'unknown'}${c.consentNote ? ` — "${c.consentNote}"` : ''}`
+        : 'Not yet recorded';
+      doc.fillColor(c.consentRecordedAt ? '#000' : '#a33').text(`${name}: ${status}`);
+    }
+    doc.fillColor('#000');
+    doc.moveDown();
+  }
+
   const colX = [40, 160, 260, 350, 420, 470, 520];
   const headers = ['Employee', 'Project', 'Task', 'Start', 'Mins', 'Score', 'Shots'];
   doc.fontSize(9).font('Helvetica-Bold');

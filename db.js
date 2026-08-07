@@ -119,6 +119,28 @@ function open(dataDir) {
     CREATE INDEX IF NOT EXISTS idx_rules_org ON rules(organizationId);
   `);
 
+  // ── Migrations (additive-only ALTER TABLEs against existing installs) ─────
+  // CREATE TABLE IF NOT EXISTS above never touches a table that already exists,
+  // so new columns on a pre-existing `users` table (i.e. any production install
+  // that predates a given feature) need to be added explicitly here. Every one
+  // of these is nullable, so old rows just load with NULLs — nothing backfills.
+  function ensureColumn(table, col, type) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+    if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  }
+  // Shared by password reset and manager invites (single-use token hash + expiry).
+  ensureColumn('users', 'resetTokenHash', 'TEXT');
+  ensureColumn('users', 'resetTokenExpiresAt', 'TEXT');
+  // 'pending' while an invited manager hasn't set a password yet, else NULL.
+  ensureColumn('users', 'inviteStatus', 'TEXT');
+  // Offline consent tracking — a Partner/Manager attesting that a *subordinate*
+  // (who may never log in) was told about monitoring and consented outside the
+  // app. Deliberately separate from popiaAcknowledgedAt, which only ever records
+  // the logged-in dashboard user acknowledging the notice for themselves.
+  ensureColumn('users', 'consentRecordedAt', 'TEXT');
+  ensureColumn('users', 'consentRecordedBy', 'TEXT');
+  ensureColumn('users', 'consentNote', 'TEXT');
+
   // ── Organizations ────────────────────────────────────────────────────────
   const stmtInsertOrg = db.prepare(`INSERT INTO organizations
     (id, name, plan, seatLimit, permanentScreenshots, status, createdAt)
@@ -152,16 +174,21 @@ function open(dataDir) {
 
   // ── Users ────────────────────────────────────────────────────────────────
   const stmtInsertUser = db.prepare(`INSERT INTO users
-    (id, organizationId, name, email, passwordHash, role, managerId, agentToken, active, deactivatedAt, popiaAcknowledgedAt, createdAt)
-    VALUES (@id, @organizationId, @name, @email, @passwordHash, @role, @managerId, @agentToken, @active, @deactivatedAt, @popiaAcknowledgedAt, @createdAt)`);
+    (id, organizationId, name, email, passwordHash, role, managerId, agentToken, active, deactivatedAt, popiaAcknowledgedAt, createdAt,
+     resetTokenHash, resetTokenExpiresAt, inviteStatus, consentRecordedAt, consentRecordedBy, consentNote)
+    VALUES (@id, @organizationId, @name, @email, @passwordHash, @role, @managerId, @agentToken, @active, @deactivatedAt, @popiaAcknowledgedAt, @createdAt,
+     @resetTokenHash, @resetTokenExpiresAt, @inviteStatus, @consentRecordedAt, @consentRecordedBy, @consentNote)`);
   const stmtGetUserById = db.prepare(`SELECT * FROM users WHERE id = ?`);
   const stmtGetUserByEmail = db.prepare(`SELECT * FROM users WHERE email = ? COLLATE NOCASE`);
   const stmtGetUserByAgentToken = db.prepare(`SELECT * FROM users WHERE agentToken = ?`);
+  const stmtGetUserByResetToken = db.prepare(`SELECT * FROM users WHERE resetTokenHash = ?`);
   const stmtListUsersByOrg = db.prepare(`SELECT * FROM users WHERE organizationId = ?`);
   const stmtListAllUsers = db.prepare(`SELECT * FROM users`);
   const stmtUpdateUser = db.prepare(`UPDATE users SET
     name=@name, email=@email, passwordHash=@passwordHash, role=@role, managerId=@managerId,
-    agentToken=@agentToken, active=@active, deactivatedAt=@deactivatedAt, popiaAcknowledgedAt=@popiaAcknowledgedAt
+    agentToken=@agentToken, active=@active, deactivatedAt=@deactivatedAt, popiaAcknowledgedAt=@popiaAcknowledgedAt,
+    resetTokenHash=@resetTokenHash, resetTokenExpiresAt=@resetTokenExpiresAt, inviteStatus=@inviteStatus,
+    consentRecordedAt=@consentRecordedAt, consentRecordedBy=@consentRecordedBy, consentNote=@consentNote
     WHERE id=@id`);
   const stmtDeleteUser = db.prepare(`DELETE FROM users WHERE id = ?`);
   const stmtCountActiveEmployees = db.prepare(
@@ -184,6 +211,12 @@ function open(dataDir) {
       deactivatedAt: user.deactivatedAt || null,
       popiaAcknowledgedAt: user.popiaAcknowledgedAt || null,
       createdAt: user.createdAt || new Date().toISOString(),
+      resetTokenHash: user.resetTokenHash || null,
+      resetTokenExpiresAt: user.resetTokenExpiresAt || null,
+      inviteStatus: user.inviteStatus || null,
+      consentRecordedAt: user.consentRecordedAt || null,
+      consentRecordedBy: user.consentRecordedBy || null,
+      consentNote: user.consentNote || null,
     };
     stmtInsertUser.run(row);
     return rowToUser(row);
@@ -191,10 +224,20 @@ function open(dataDir) {
   function findUserById(id) { return rowToUser(stmtGetUserById.get(id)); }
   function findUserByEmail(email) { return rowToUser(stmtGetUserByEmail.get(email)); }
   function findUserByAgentToken(token) { return rowToUser(stmtGetUserByAgentToken.get(token)); }
+  function findUserByResetToken(hash) { return rowToUser(stmtGetUserByResetToken.get(hash)); }
   function listUsersByOrg(orgId) { return stmtListUsersByOrg.all(orgId).map(rowToUser); }
   function listAllUsers() { return stmtListAllUsers.all().map(rowToUser); }
   function updateUser(user) {
-    stmtUpdateUser.run({ ...user, active: user.active === false ? 0 : 1 });
+    stmtUpdateUser.run({
+      ...user,
+      active: user.active === false ? 0 : 1,
+      resetTokenHash: user.resetTokenHash ?? null,
+      resetTokenExpiresAt: user.resetTokenExpiresAt ?? null,
+      inviteStatus: user.inviteStatus ?? null,
+      consentRecordedAt: user.consentRecordedAt ?? null,
+      consentRecordedBy: user.consentRecordedBy ?? null,
+      consentNote: user.consentNote ?? null,
+    });
     return findUserById(user.id);
   }
   function deleteUser(id) { stmtDeleteUser.run(id); }
@@ -300,7 +343,7 @@ function open(dataDir) {
   return {
     raw: db,
     createOrg, getOrg, listOrgs, updateOrg,
-    insertUser, findUserById, findUserByEmail, findUserByAgentToken, listUsersByOrg, listAllUsers, updateUser, deleteUser, countActiveEmployees,
+    insertUser, findUserById, findUserByEmail, findUserByAgentToken, findUserByResetToken, listUsersByOrg, listAllUsers, updateUser, deleteUser, countActiveEmployees,
     insertEntry, updateEntry, deleteEntry, findEntryById, findRunningEntries, listEntriesByOrg, bumpScreenshotCount,
     insertHeartbeat, listHeartbeatsByOrgRange, latestHeartbeatsByOrg, pruneHeartbeats,
     insertAppEvent, listAppEventsByOrgRange, latestAppEventsByOrg, pruneAppEvents,
