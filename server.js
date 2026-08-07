@@ -8,6 +8,8 @@ const archiver = require('archiver');
 const PDFDocument = require('pdfkit');
 const dbLib    = require('./db');
 const { issueToken, hashToken, verifyToken, rateLimited } = require('./lib/tokens');
+const { ALERT_DEFAULTS, resolveAlertSettings, weekendAdjustedElapsedMs, isDigestDueNow } = require('./lib/alerts');
+const mailer   = require('./lib/mailer');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -405,6 +407,166 @@ function canManage(actor, target) {
   return false;
 }
 
+// ── Alerts: who should be told what, and how often ──────────────────────────
+// All the raw signals (idle seconds, last heartbeat, red-flag classification)
+// already exist for Live Status above — this reuses them rather than adding
+// any new tracking, and needs no change to the desktop Agent at all.
+//
+// Cooldowns are deliberately simple (a fixed "don't repeat within N hours"
+// window per recipient+employee+type) rather than exact edge-detection on
+// when a condition started/cleared — good enough for a periodic sweep, and
+// every fired alert is logged (db.insertAlertLog) so it can be reasoned about
+// or shown back to a manager later.
+const ALERT_SWEEP_INTERVAL_MS   = 5  * 60 * 1000;  // how often the real-time check runs
+const ALERT_IDLE_COOLDOWN_MS    = 2  * 60 * 60 * 1000; // 2h — don't re-alert the same idle stretch every 5 minutes
+const ALERT_OFFLINE_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12h
+const ALERT_REDFLAG_COOLDOWN_MS = 1  * 60 * 60 * 1000; // 1h per employee, regardless of which flagged site
+const DIGEST_SWEEP_INTERVAL_MS  = 60 * 60 * 1000;  // hourly check for whose digest is due right now
+
+// Who gets alerted about a given employee: their direct manager (if any) plus
+// every partner/director in the org — partners already see every employee on
+// Live Status, so the same visibility rule applies here. Each recipient still
+// only gets an email if THEIR OWN thresholds are crossed and THEIR OWN
+// toggles allow it (see resolveAlertSettings) — this only decides who's in
+// the running, not what fires.
+function alertRecipientsFor(orgUsers, employee) {
+  const recipients = orgUsers.filter(u => u.role === 'partner');
+  const mgr = orgUsers.find(u => u.id === employee.managerId && u.role === 'manager');
+  if (mgr) recipients.push(mgr);
+  return [...new Map(recipients.map(r => [r.id, r])).values()];
+}
+
+function withinAlertCooldown(recipientId, employeeId, alertType, cooldownMs) {
+  const last = db.lastAlertFiredAt(recipientId, employeeId, alertType);
+  return !!last && (Date.now() - new Date(last).getTime()) < cooldownMs;
+}
+function logAlert(organizationId, recipientId, employeeId, alertType, detail) {
+  db.insertAlertLog({ organizationId, recipientId, employeeId, alertType, detail: detail || null, firedAt: new Date().toISOString() });
+}
+function sendRealtimeAlert(recipient, employee, type, message) {
+  const subject = {
+    redflag: `Wachadoin alert: ${employee.name} visited a flagged site`,
+    idle:    `Wachadoin alert: ${employee.name} has been idle`,
+    offline: `Wachadoin alert: ${employee.name} appears offline`,
+  }[type] || `Wachadoin alert: ${employee.name}`;
+  const html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222">
+    <p><strong>${employee.name}</strong> ${message}.</p>
+    <p style="color:#666;font-size:12px">You're getting this because you manage ${employee.name}, or are a partner/director at your firm. Change your thresholds or turn this off any time in Wachadoin under <strong>Alert Settings</strong>.</p>
+  </div>`;
+  mailer.sendMail({ to: recipient.email, subject, html }).catch(err => console.error('[alerts] send failed:', err.message));
+}
+
+function runAlertSweep() {
+  for (const org of db.listOrgs()) {
+    if (org.id === PLATFORM_ORG_ID) continue;
+    const orgUsers = db.listUsersByOrg(org.id);
+    const employees = orgUsers.filter(u => u.role === 'employee' && u.active !== false);
+    if (!employees.length) continue;
+
+    const latestHb = {};  for (const hb of db.latestHeartbeatsByOrg(org.id)) latestHb[hb.userId] = hb;
+    const latestApp = {}; for (const a of db.latestAppEventsByOrg(org.id)) latestApp[a.userId] = a;
+    const nowIso = new Date().toISOString();
+
+    for (const emp of employees) {
+      const recipients = alertRecipientsFor(orgUsers, emp);
+      if (!recipients.length) continue;
+      const hb = latestHb[emp.id];
+      const ap = latestApp[emp.id];
+      const flag = ap ? classify(org.id, ap.appName, ap.title) : null;
+
+      for (const recipient of recipients) {
+        const settings = resolveAlertSettings(recipient);
+
+        if (flag === 'redflag' && settings.redFlagEnabled && ap &&
+            !withinAlertCooldown(recipient.id, emp.id, 'redflag', ALERT_REDFLAG_COOLDOWN_MS)) {
+          logAlert(org.id, recipient.id, emp.id, 'redflag', `${ap.appName || 'Unknown app'}${ap.title ? ` — "${ap.title}"` : ''}`);
+          sendRealtimeAlert(recipient, emp, 'redflag', `visited a flagged site/app: ${ap.appName || 'unknown'}${ap.title ? ` — "${ap.title}"` : ''}`);
+        }
+
+        if (hb && hb.idleSecs != null && hb.idleSecs >= settings.idleMins * 60 &&
+            !withinAlertCooldown(recipient.id, emp.id, 'idle', ALERT_IDLE_COOLDOWN_MS)) {
+          logAlert(org.id, recipient.id, emp.id, 'idle', `idle for ${Math.round(hb.idleSecs / 60)} min`);
+          sendRealtimeAlert(recipient, emp, 'idle', `has been idle for ${Math.round(hb.idleSecs / 60)} minutes`);
+        }
+
+        // No heartbeat at all yet just means the Agent hasn't started, not "offline" — only
+        // ever alert once there's at least one heartbeat on record to measure a gap from.
+        if (hb) {
+          const elapsedMs = weekendAdjustedElapsedMs(hb.ts, nowIso);
+          if (elapsedMs >= settings.offlineMins * 60 * 1000 &&
+              !withinAlertCooldown(recipient.id, emp.id, 'offline', ALERT_OFFLINE_COOLDOWN_MS)) {
+            logAlert(org.id, recipient.id, emp.id, 'offline', `no activity since ${hb.ts}`);
+            sendRealtimeAlert(recipient, emp, 'offline', `has had no activity since ${new Date(hb.ts).toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' })} (weekend time excluded)`);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Weekly per-recipient summary: tracked hours, average activity score, and
+// how many of each alert type fired for each employee they can see, over the
+// last 7 days. Runs hourly and relies on isDigestDueNow() to only actually
+// send once per recipient per matching SAST day/hour.
+function sendDigestEmail(org, orgUsers, recipient, now) {
+  const employees = visibleEmployees(orgUsers, recipient);
+  if (!employees.length) return;
+  const sinceIso = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const entries = db.listEntriesByOrg(org.id, { from: sinceIso.slice(0, 10), to: now.toISOString().slice(0, 10) });
+  const alertCounts = db.alertCountsForRecipientSince(recipient.id, sinceIso);
+
+  const rows = employees.map(emp => {
+    const empEntries = entries.filter(e => e.userId === emp.id);
+    const totalMs = empEntries.reduce((s, e) => s + (e.durationMs || 0), 0);
+    const scored = empEntries.filter(e => e.activityScore != null);
+    const avgScore = scored.length ? Math.round(scored.reduce((s, e) => s + e.activityScore, 0) / scored.length) : null;
+    const counts = { idle: 0, offline: 0, redflag: 0 };
+    for (const c of alertCounts) if (c.employeeId === emp.id && counts[c.alertType] !== undefined) counts[c.alertType] = c.c;
+    return { name: emp.name, hours: (totalMs / 3600000).toFixed(1), avgScore, ...counts };
+  });
+  if (!rows.length) return;
+
+  const tableRows = rows.map(r => `<tr>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee">${r.name}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${r.hours}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${r.avgScore ?? '—'}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right;color:${r.redflag ? '#c0392b' : '#666'}">${r.redflag}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${r.idle}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #eee;text-align:right">${r.offline}</td>
+    </tr>`).join('');
+  const html = `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222">
+    <p>Here's the past 7 days for your team on Wachadoin:</p>
+    <table style="border-collapse:collapse;width:100%;max-width:640px">
+      <thead><tr style="text-align:left;font-size:12px;color:#666">
+        <th style="padding:6px 10px">Employee</th><th style="padding:6px 10px;text-align:right">Hours logged</th>
+        <th style="padding:6px 10px;text-align:right">Avg activity</th><th style="padding:6px 10px;text-align:right">Red flags</th>
+        <th style="padding:6px 10px;text-align:right">Idle alerts</th><th style="padding:6px 10px;text-align:right">Offline alerts</th>
+      </tr></thead>
+      <tbody>${tableRows}</tbody>
+    </table>
+    <p style="color:#666;font-size:12px;margin-top:16px">Change how often you get this, or turn it off, any time in Wachadoin under <strong>Alert Settings</strong>.</p>
+  </div>`;
+  mailer.sendMail({ to: recipient.email, subject: `Wachadoin weekly summary — ${rows.length} team member${rows.length === 1 ? '' : 's'}`, html })
+    .catch(err => console.error('[alerts] digest send failed:', err.message));
+}
+
+function runDigestSweep() {
+  const now = new Date();
+  for (const org of db.listOrgs()) {
+    if (org.id === PLATFORM_ORG_ID) continue;
+    const orgUsers = db.listUsersByOrg(org.id);
+    for (const recipient of orgUsers.filter(u => u.role === 'manager' || u.role === 'partner')) {
+      const settings = resolveAlertSettings(recipient);
+      if (!isDigestDueNow(settings, now, recipient.alertLastDigestSentAt)) continue;
+      sendDigestEmail(org, orgUsers, recipient, now);
+      db.updateUser({ ...recipient, alertLastDigestSentAt: now.toISOString() });
+    }
+  }
+}
+
+setInterval(runAlertSweep, ALERT_SWEEP_INTERVAL_MS);
+setInterval(runDigestSweep, DIGEST_SWEEP_INTERVAL_MS);
+
 function resolveRange(req) {
   const today = new Date().toISOString().split('T')[0];
   if (req.query.from || req.query.to) {
@@ -678,6 +840,37 @@ app.delete('/api/users/:id', auth, managerOrAbove, (req, res) => {
   if (!canManage(req.user, target)) return res.status(403).json({ error: 'Not allowed' });
   db.deleteUser(target.id);
   res.json({ ok: true });
+});
+
+// ── Alert settings ─────────────────────────────────────────────
+// Deliberately self-service and personal, not something a partner sets for a
+// manager: each manager/partner configures their OWN thresholds for what
+// they want to be told about, per Ian's ask. There's no endpoint for setting
+// someone else's — /api/users/me only.
+function alertSettingsResponse(user) {
+  return { ...resolveAlertSettings(user), defaults: ALERT_DEFAULTS };
+}
+app.get('/api/users/me/alert-settings', auth, managerOrAbove, (req, res) => {
+  res.json(alertSettingsResponse(db.findUserById(req.user.id)));
+});
+app.put('/api/users/me/alert-settings', auth, managerOrAbove, (req, res) => {
+  const user = db.findUserById(req.user.id);
+  const { idleMins, offlineMins, redFlagEnabled, digestEnabled, digestDay, digestHour } = req.body || {};
+  const clampInt = (v, lo, hi, current) => {
+    if (v === undefined) return current;
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : current;
+  };
+  const updated = db.updateUser({
+    ...user,
+    alertIdleMins:    clampInt(idleMins, 1, 1440, user.alertIdleMins),
+    alertOfflineMins: clampInt(offlineMins, 15, 20160, user.alertOfflineMins),
+    alertRedFlagEnabled: redFlagEnabled !== undefined ? (redFlagEnabled ? 1 : 0) : user.alertRedFlagEnabled,
+    alertDigestEnabled:  digestEnabled  !== undefined ? (digestEnabled  ? 1 : 0) : user.alertDigestEnabled,
+    alertDigestDay:  clampInt(digestDay, 0, 6, user.alertDigestDay),
+    alertDigestHour: clampInt(digestHour, 0, 23, user.alertDigestHour),
+  });
+  res.json(alertSettingsResponse(updated));
 });
 
 // ── Entries ────────────────────────────────────────────────────

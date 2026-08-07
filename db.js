@@ -117,6 +117,17 @@ function open(dataDir) {
       category TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_rules_org ON rules(organizationId);
+
+    CREATE TABLE IF NOT EXISTS alert_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      organizationId TEXT NOT NULL,
+      recipientId TEXT NOT NULL,
+      employeeId TEXT NOT NULL,
+      alertType TEXT NOT NULL,
+      detail TEXT,
+      firedAt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_log_lookup ON alert_log(recipientId, employeeId, alertType, firedAt);
   `);
 
   // ── Migrations (additive-only ALTER TABLEs against existing installs) ─────
@@ -157,6 +168,17 @@ function open(dataDir) {
   // actually cuts the org off. Both are null while status isn't 'canceled'.
   ensureColumn('organizations', 'cancelRequestedAt', 'TEXT');
   ensureColumn('organizations', 'accessUntil', 'TEXT');
+  // Per-recipient alert preferences (manager/partner configuring their OWN
+  // thresholds, not something set org-wide) — every column is nullable and
+  // NULL means "use the platform default", resolved in lib/alerts.js's
+  // resolveAlertSettings() rather than backfilled here.
+  ensureColumn('users', 'alertIdleMins', 'INTEGER');
+  ensureColumn('users', 'alertOfflineMins', 'INTEGER');
+  ensureColumn('users', 'alertRedFlagEnabled', 'INTEGER');
+  ensureColumn('users', 'alertDigestEnabled', 'INTEGER');
+  ensureColumn('users', 'alertDigestDay', 'INTEGER');   // 0=Sun..6=Sat, SAST
+  ensureColumn('users', 'alertDigestHour', 'INTEGER');  // 0-23, SAST
+  ensureColumn('users', 'alertLastDigestSentAt', 'TEXT');
 
   // ── Organizations ────────────────────────────────────────────────────────
   const stmtInsertOrg = db.prepare(`INSERT INTO organizations
@@ -201,9 +223,11 @@ function open(dataDir) {
   // ── Users ────────────────────────────────────────────────────────────────
   const stmtInsertUser = db.prepare(`INSERT INTO users
     (id, organizationId, name, email, passwordHash, role, managerId, agentToken, active, deactivatedAt, popiaAcknowledgedAt, createdAt,
-     resetTokenHash, resetTokenExpiresAt, inviteStatus, consentRecordedAt, consentRecordedBy, consentNote)
+     resetTokenHash, resetTokenExpiresAt, inviteStatus, consentRecordedAt, consentRecordedBy, consentNote,
+     alertIdleMins, alertOfflineMins, alertRedFlagEnabled, alertDigestEnabled, alertDigestDay, alertDigestHour, alertLastDigestSentAt)
     VALUES (@id, @organizationId, @name, @email, @passwordHash, @role, @managerId, @agentToken, @active, @deactivatedAt, @popiaAcknowledgedAt, @createdAt,
-     @resetTokenHash, @resetTokenExpiresAt, @inviteStatus, @consentRecordedAt, @consentRecordedBy, @consentNote)`);
+     @resetTokenHash, @resetTokenExpiresAt, @inviteStatus, @consentRecordedAt, @consentRecordedBy, @consentNote,
+     @alertIdleMins, @alertOfflineMins, @alertRedFlagEnabled, @alertDigestEnabled, @alertDigestDay, @alertDigestHour, @alertLastDigestSentAt)`);
   const stmtGetUserById = db.prepare(`SELECT * FROM users WHERE id = ?`);
   const stmtGetUserByEmail = db.prepare(`SELECT * FROM users WHERE email = ? COLLATE NOCASE`);
   const stmtGetUserByAgentToken = db.prepare(`SELECT * FROM users WHERE agentToken = ?`);
@@ -214,7 +238,10 @@ function open(dataDir) {
     name=@name, email=@email, passwordHash=@passwordHash, role=@role, managerId=@managerId,
     agentToken=@agentToken, active=@active, deactivatedAt=@deactivatedAt, popiaAcknowledgedAt=@popiaAcknowledgedAt,
     resetTokenHash=@resetTokenHash, resetTokenExpiresAt=@resetTokenExpiresAt, inviteStatus=@inviteStatus,
-    consentRecordedAt=@consentRecordedAt, consentRecordedBy=@consentRecordedBy, consentNote=@consentNote
+    consentRecordedAt=@consentRecordedAt, consentRecordedBy=@consentRecordedBy, consentNote=@consentNote,
+    alertIdleMins=@alertIdleMins, alertOfflineMins=@alertOfflineMins, alertRedFlagEnabled=@alertRedFlagEnabled,
+    alertDigestEnabled=@alertDigestEnabled, alertDigestDay=@alertDigestDay, alertDigestHour=@alertDigestHour,
+    alertLastDigestSentAt=@alertLastDigestSentAt
     WHERE id=@id`);
   const stmtDeleteUser = db.prepare(`DELETE FROM users WHERE id = ?`);
   const stmtCountActiveEmployees = db.prepare(
@@ -243,6 +270,13 @@ function open(dataDir) {
       consentRecordedAt: user.consentRecordedAt || null,
       consentRecordedBy: user.consentRecordedBy || null,
       consentNote: user.consentNote || null,
+      alertIdleMins: user.alertIdleMins ?? null,
+      alertOfflineMins: user.alertOfflineMins ?? null,
+      alertRedFlagEnabled: user.alertRedFlagEnabled ?? null,
+      alertDigestEnabled: user.alertDigestEnabled ?? null,
+      alertDigestDay: user.alertDigestDay ?? null,
+      alertDigestHour: user.alertDigestHour ?? null,
+      alertLastDigestSentAt: user.alertLastDigestSentAt || null,
     };
     stmtInsertUser.run(row);
     return rowToUser(row);
@@ -263,6 +297,13 @@ function open(dataDir) {
       consentRecordedAt: user.consentRecordedAt ?? null,
       consentRecordedBy: user.consentRecordedBy ?? null,
       consentNote: user.consentNote ?? null,
+      alertIdleMins: user.alertIdleMins ?? null,
+      alertOfflineMins: user.alertOfflineMins ?? null,
+      alertRedFlagEnabled: user.alertRedFlagEnabled ?? null,
+      alertDigestEnabled: user.alertDigestEnabled ?? null,
+      alertDigestDay: user.alertDigestDay ?? null,
+      alertDigestHour: user.alertDigestHour ?? null,
+      alertLastDigestSentAt: user.alertLastDigestSentAt ?? null,
     });
     return findUserById(user.id);
   }
@@ -366,6 +407,28 @@ function open(dataDir) {
     tx(rules);
   }
 
+  // ── Alert log ────────────────────────────────────────────────────────────
+  // One row per alert email actually fired (or attempted) — used both to
+  // throttle repeat real-time alerts for the same ongoing condition (see
+  // lastAlertFiredAt, used as a cooldown gate in server.js) and to build each
+  // recipient's weekly digest counts.
+  const stmtInsertAlertLog = db.prepare(`INSERT INTO alert_log
+    (organizationId, recipientId, employeeId, alertType, detail, firedAt)
+    VALUES (@organizationId, @recipientId, @employeeId, @alertType, @detail, @firedAt)`);
+  const stmtLastAlertFiredAt = db.prepare(
+    `SELECT MAX(firedAt) AS t FROM alert_log WHERE recipientId = ? AND employeeId = ? AND alertType = ?`);
+  const stmtAlertCountsSince = db.prepare(
+    `SELECT employeeId, alertType, COUNT(*) AS c FROM alert_log
+     WHERE recipientId = ? AND firedAt >= ? GROUP BY employeeId, alertType`);
+
+  function insertAlertLog(row) { stmtInsertAlertLog.run(row); }
+  function lastAlertFiredAt(recipientId, employeeId, alertType) {
+    return stmtLastAlertFiredAt.get(recipientId, employeeId, alertType)?.t || null;
+  }
+  function alertCountsForRecipientSince(recipientId, sinceIso) {
+    return stmtAlertCountsSince.all(recipientId, sinceIso);
+  }
+
   return {
     raw: db,
     createOrg, getOrg, listOrgs, updateOrg,
@@ -375,6 +438,7 @@ function open(dataDir) {
     insertAppEvent, listAppEventsByOrgRange, latestAppEventsByOrg, pruneAppEvents,
     insertScreenshotRecord, listScreenshotsByOrgRange, listRecentScreenshotsByOrg, deleteScreenshotRecord, expiredScreenshotFilenames,
     insertRule, listRules, replaceRules,
+    insertAlertLog, lastAlertFiredAt, alertCountsForRecipientSince,
   };
 }
 
