@@ -618,6 +618,45 @@ tr:hover td { background: rgba(0,194,196,.05); }
       </div>
     </div>
 
+    <!-- Alert Settings (manager/partner, self-service — each person's own thresholds) -->
+    <div class="page" id="pgAlerts">
+      <div class="page-header">
+        <div><div class="page-title">Alert Settings</div><div class="page-sub">Choose what YOU personally get emailed about — these are your own settings, not shared with anyone else</div></div>
+      </div>
+      <p style="color:var(--dim);margin-bottom:20px;max-width:720px">Wachadoin can email you when someone on your team is idle too long, hasn't been seen in a while, or visits a red-flag site — using the same Live Status and Monitoring Rules data you already see on-screen, so there's nothing extra to set up on anyone's computer. Every manager and partner/director sets their <strong>own</strong> thresholds here: turning something off only changes what you get emailed, not what anyone else sees.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:20px">
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--red)">⚠ Red flags</h3>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="alertRedFlagEnabled" style="width:auto;margin:0"> Email me the moment someone visits a flagged site/app</label>
+          <p style="font-size:12px;color:var(--dim);margin-top:10px">To avoid a flood of emails from the same person on the same site, you'll get at most one of these per person per hour.</p>
+        </div>
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">💤 Idle too long</h3>
+          <label>Alert me if idle for more than</label>
+          <div class="key-row" style="align-items:center"><input id="alertIdleMins" type="number" min="1" max="1440" style="margin:0;max-width:90px"><span style="color:var(--dim);font-size:13px">minutes (default 20)</span></div>
+        </div>
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">🔌 Offline too long</h3>
+          <label>Alert me if there's been no activity for more than</label>
+          <div class="key-row" style="align-items:center"><input id="alertOfflineMins" type="number" min="1" max="20160" style="margin:0;max-width:90px"><span style="color:var(--dim);font-size:13px">minutes (default 1440 = 24 hours)</span></div>
+          <p style="font-size:12px;color:var(--dim);margin-top:10px">Weekends don't count against this — someone who logs off Friday evening won't trigger it just because it's now Monday.</p>
+        </div>
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px">📊 Weekly summary</h3>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-bottom:14px;cursor:pointer"><input type="checkbox" id="alertDigestEnabled" style="width:auto;margin:0"> Email me a weekly summary of my team</label>
+          <div style="display:flex;gap:10px">
+            <div style="flex:1"><label>Day</label><select id="alertDigestDay" style="margin:0">
+              <option value="0">Sunday</option><option value="1">Monday</option><option value="2">Tuesday</option>
+              <option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option>
+            </select></div>
+            <div style="flex:1"><label>Time (SAST)</label><select id="alertDigestHour" style="margin:0"></select></div>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-primary" style="margin-top:20px" onclick="saveAlertSettings()">Save Alert Settings</button>
+      <div id="alertSettingsOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px">Saved.</div>
+    </div>
+
     <!-- Admin (manager/partner) -->
     <div class="page" id="pgAdmin">
       <div class="page-header"><div><div class="page-title">Team Members</div><div class="page-sub">Add and manage employees — and, for partners/directors, managers too</div></div></div>
@@ -1067,6 +1106,7 @@ const DASH_NAV = [
   { id:'pgTimeline', icon:'📊', label:'Activity Timeline',  tip:'Active vs idle detail, tracked-hours totals, and trends across any range.' },
   { id:'pgShots',    icon:'📷', label:'Screenshots',        tip:'Browse captured screenshots by date range and employee.' },
   { id:'pgRules',    icon:'🚩', label:'Monitoring Rules',   tip:'Decide which apps/sites count as work vs a red flag.' },
+  { id:'pgAlerts',   icon:'🔔', label:'Alert Settings',     tip:'Choose when YOU get emailed about idle time, offline staff, or red-flag sites.' },
   { id:'pgAdmin',    icon:'👥', label:'Team Members',       tip:'Add employees and managers, get Agent Keys, deactivate leavers.' },
   { id:'pgHelp',     icon:'❓', label:'Help & Guide',       tip:'Plain-language guide to every page, onboarding, and offboarding.' },
 ];
@@ -1085,6 +1125,7 @@ function showPage(id) {
   document.querySelector(`[data-page="${id}"]`)?.classList.add('active');
   if (id === 'pgAdmin') loadUserList();
   if (id === 'pgRules') loadRules();
+  if (id === 'pgAlerts') loadAlertSettings();
 }
 
 // ── Date-range bars (day / week / month / custom) ──────────────────────────────
@@ -1618,6 +1659,40 @@ function removeRule(id) {
 async function loadSuggestedRules() {
   const r = await fetch('/api/settings/rules/suggested', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
   allRules = r; renderRules();
+}
+
+// ── Alert Settings (self-service — always the logged-in manager/partner's own) ──
+async function loadAlertSettings() {
+  const s = await api('/api/users/me/alert-settings');
+  document.getElementById('alertRedFlagEnabled').checked = s.redFlagEnabled;
+  document.getElementById('alertIdleMins').value = s.idleMins;
+  document.getElementById('alertOfflineMins').value = s.offlineMins;
+  document.getElementById('alertDigestEnabled').checked = s.digestEnabled;
+  document.getElementById('alertDigestDay').value = s.digestDay;
+  const hourSel = document.getElementById('alertDigestHour');
+  if (!hourSel.options.length) {
+    hourSel.innerHTML = Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, '0')}:00</option>`).join('');
+  }
+  hourSel.value = s.digestHour;
+}
+async function saveAlertSettings() {
+  const body = {
+    redFlagEnabled: document.getElementById('alertRedFlagEnabled').checked,
+    idleMins:       parseInt(document.getElementById('alertIdleMins').value, 10),
+    offlineMins:    parseInt(document.getElementById('alertOfflineMins').value, 10),
+    digestEnabled:  document.getElementById('alertDigestEnabled').checked,
+    digestDay:      parseInt(document.getElementById('alertDigestDay').value, 10),
+    digestHour:     parseInt(document.getElementById('alertDigestHour').value, 10),
+  };
+  const r = await fetch('/api/users/me/alert-settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body),
+  }).then(r => r.json());
+  // Server clamps out-of-range values — reflect whatever it actually saved.
+  document.getElementById('alertIdleMins').value = r.idleMins;
+  document.getElementById('alertOfflineMins').value = r.offlineMins;
+  const ok = document.getElementById('alertSettingsOk');
+  ok.style.display = 'block';
+  setTimeout(() => { ok.style.display = 'none'; }, 2500);
 }
 
 // ── Trial / cancellation banner (managers & partners) ───────────────────────────
