@@ -62,7 +62,7 @@ body {
 .auth-card h2 { font-size: 18px; font-weight: 600; margin-bottom: 20px; }
 
 label { display: block; font-size: 12px; font-weight: 500; color: var(--dim); margin-bottom: 6px; }
-input {
+input, textarea {
   display: block; width: 100%;
   padding: 10px 14px;
   background: var(--bg);
@@ -73,9 +73,10 @@ input {
   margin-bottom: 14px;
   outline: none;
   transition: border-color .15s;
+  font-family: inherit;
 }
-input:focus { border-color: var(--primary); }
-input::placeholder { color: var(--muted); }
+input:focus, textarea:focus { border-color: var(--primary); }
+input::placeholder, textarea::placeholder { color: var(--muted); }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -96,6 +97,11 @@ input::placeholder { color: var(--muted); }
 
 .err-box {
   background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5;
+  padding: 10px 14px; border-radius: 8px; font-size: 13px;
+  margin-top: 10px; display: none;
+}
+.ok-box {
+  background: #052e16; border: 1px solid #14532d; color: #86efac;
   padding: 10px 14px; border-radius: 8px; font-size: 13px;
   margin-top: 10px; display: none;
 }
@@ -369,6 +375,42 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <p style="font-size:13px;color:var(--dim);margin-top:16px;text-align:center">
         New firm? <a href="#" id="showSignup" style="color:var(--primary);text-decoration:none">Start a free trial</a>
       </p>
+      <p style="font-size:13px;color:var(--dim);margin-top:8px;text-align:center">
+        <a href="#" id="showForgot" style="color:var(--primary);text-decoration:none">Forgot password?</a>
+      </p>
+    </div>
+    <div id="forgotPanel" style="display:none">
+      <h2>Reset your password</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Enter the email on your account. Since automatic email delivery isn't connected yet, we'll show the reset link right here for you to use — it's only valid for 30 minutes.</p>
+      <label>Email</label>
+      <input id="forgotEmail" type="email" placeholder="you@yourfirm.com" autocomplete="username">
+      <button class="btn btn-primary" id="btnForgot">Send reset link</button>
+      <div class="err-box" id="forgotErr"></div>
+      <div id="forgotResult" style="display:none;margin-top:14px">
+        <label>Your reset link</label>
+        <div class="key-row">
+          <div class="key-field" id="forgotLink">—</div>
+          <button class="btn btn-ghost btn-sm" title="Copy to clipboard" onclick="copyField('forgotLink')">Copy</button>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--dim);margin-top:16px;text-align:center">
+        <a href="#" id="showLoginFromForgot" style="color:var(--primary);text-decoration:none">Back to sign in</a>
+      </p>
+    </div>
+    <div id="resetPanel" style="display:none">
+      <h2>Choose a new password</h2>
+      <label>New password</label>
+      <input id="resetPass" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+      <button class="btn btn-primary" id="btnReset">Set new password</button>
+      <div class="err-box" id="resetErr"></div>
+    </div>
+    <div id="acceptInvitePanel" style="display:none">
+      <h2>Activate your account</h2>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Choose a password to finish setting up your manager login.</p>
+      <label>New password</label>
+      <input id="inviteAcceptPass" type="password" placeholder="At least 8 characters" autocomplete="new-password">
+      <button class="btn btn-primary" id="btnAcceptInvite">Activate account</button>
+      <div class="err-box" id="inviteAcceptErr"></div>
     </div>
     <div id="signupPanel" style="display:none">
       <h2>Set up your firm</h2>
@@ -579,16 +621,21 @@ tr:hover td { background: rgba(0,194,196,.05); }
         <!-- Add manager form (partner/director only) -->
         <div class="card" id="addManagerCard" style="display:none">
           <h3 style="font-size:15px;font-weight:600;margin-bottom:16px">Add New Manager</h3>
-          <p style="font-size:12px;color:var(--dim);margin-bottom:2px">Managers log in to the dashboard and see the employees assigned to them.</p>
+          <p style="font-size:12px;color:var(--dim);margin-bottom:2px">Managers log in to the dashboard and see the employees assigned to them. They'll set their own password via an invite link — you won't need to choose one for them.</p>
           <label>Full name</label>
           <input id="newMgrName"  type="text"  placeholder="Jane Smith">
           <label>Email address</label>
           <input id="newMgrEmail" type="email" placeholder="jane@yourcompany.com">
-          <label>Password</label>
-          <input id="newMgrPass"  type="text"  placeholder="Set a temporary password" title="Their starting dashboard login password.">
           <button class="btn btn-primary" style="margin-top:4px" onclick="createManager()">Add Manager</button>
           <div class="err-box" id="addMgrErr"></div>
           <div id="addMgrOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px"></div>
+          <div id="addMgrInviteResult" style="display:none;margin-top:10px">
+            <label>Invite link — send this to them</label>
+            <div class="key-row">
+              <div class="key-field" id="addMgrInviteLink">—</div>
+              <button class="btn btn-ghost btn-sm" title="Copy to clipboard" onclick="copyField('addMgrInviteLink')">Copy</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -700,6 +747,21 @@ tr:hover td { background: rgba(0,194,196,.05); }
   </div>
 </div>
 
+<!-- Offline consent record (a Partner/Manager attesting a subordinate was told & consented outside the app) -->
+<div class="modal-overlay" id="consentModal">
+  <div class="modal-box">
+    <h2 id="cnTitle">Monitoring consent</h2>
+    <p>Record that this person was given written notice about monitoring and consented — a signed form, an email, whatever your firm actually did. This is separate from the one-time notice partners/managers see when they first log in; that only covers the person driving the dashboard, never the staff being monitored.</p>
+    <div id="cnCurrent" style="font-size:13px;color:var(--dim);margin-bottom:12px">—</div>
+    <h3>Add a note (optional)</h3>
+    <textarea id="cnNote" rows="2" placeholder="e.g. Signed paper form on file, or emailed 2026-08-01"></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" style="width:auto" onclick="closeConsentModal()">Close</button>
+      <button class="btn btn-primary" style="width:auto" onclick="submitConsent()">Record consent now</button>
+    </div>
+  </div>
+</div>
+
 <!-- Monitoring/privacy onboarding notice (dashboard users, shown once) -->
 <div class="modal-overlay" id="popiaModal">
   <div class="modal-box">
@@ -767,7 +829,7 @@ document.getElementById('btnLogin').addEventListener('click', async () => {
   const pass  = document.getElementById('loginPass').value;
   const err   = document.getElementById('loginErr');
   const btn   = document.getElementById('btnLogin');
-  err.style.display = 'none';
+  err.style.display = 'none'; err.className = 'err-box';
   btn.disabled = true; btn.textContent = 'Signing in…';
   try {
     const r = await fetch('/api/auth/login', {
@@ -792,17 +854,100 @@ document.addEventListener('keydown', e => {
   document.getElementById(onSignup ? 'btnSignup' : 'btnLogin').click();
 });
 
-document.getElementById('showSignup').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('loginPanel').style.display  = 'none';
-  document.getElementById('signupPanel').style.display = 'block';
+// Shows exactly one of the auth-card panels, hiding the rest — used by both
+// the plain nav links below and by the ?reset=<token> boot-time routing.
+function showAuthPanel(id) {
+  ['loginPanel', 'signupPanel', 'forgotPanel', 'resetPanel', 'acceptInvitePanel'].forEach(p => {
+    document.getElementById(p).style.display = p === id ? 'block' : 'none';
+  });
+}
+
+document.getElementById('showSignup').addEventListener('click', e => { e.preventDefault(); showAuthPanel('signupPanel'); });
+document.getElementById('showLogin').addEventListener('click', e => { e.preventDefault(); showAuthPanel('loginPanel'); });
+document.getElementById('showForgot').addEventListener('click', e => { e.preventDefault(); showAuthPanel('forgotPanel'); });
+document.getElementById('showLoginFromForgot').addEventListener('click', e => { e.preventDefault(); showAuthPanel('loginPanel'); });
+if (window.location.pathname === '/signup') showAuthPanel('signupPanel');
+
+// A password-reset link (?reset=<token>) lands straight on the "choose a new
+// password" panel — no need to sign in first, since the token itself is the
+// proof of ownership until we have real email delivery to verify it another way.
+const resetTokenFromUrl = new URLSearchParams(window.location.search).get('reset');
+// A manager-invite link (?invite=<token>) works the same way — the token is
+// the proof of ownership, so it lands straight on the "activate" panel too.
+const inviteTokenFromUrl = new URLSearchParams(window.location.search).get('invite');
+
+document.getElementById('btnForgot').addEventListener('click', async () => {
+  const email = document.getElementById('forgotEmail').value.trim();
+  const err   = document.getElementById('forgotErr');
+  const btn   = document.getElementById('btnForgot');
+  err.style.display = 'none';
+  document.getElementById('forgotResult').style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/auth/forgot-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+    }).then(r => r.json());
+    if (r.error) throw new Error(r.error);
+    if (r.resetLink) {
+      document.getElementById('forgotLink').textContent = r.resetLink;
+      document.getElementById('forgotResult').style.display = 'block';
+    } else {
+      err.textContent = "If that email has an account, we couldn't generate a link for it right now — check the address and try again.";
+      err.style.display = 'block';
+    }
+  } catch (e) {
+    err.textContent = e.message; err.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send reset link';
+  }
 });
-document.getElementById('showLogin').addEventListener('click', e => {
-  e.preventDefault();
-  document.getElementById('signupPanel').style.display = 'none';
-  document.getElementById('loginPanel').style.display   = 'block';
+
+document.getElementById('btnReset').addEventListener('click', async () => {
+  const pass = document.getElementById('resetPass').value;
+  const err  = document.getElementById('resetErr');
+  const btn  = document.getElementById('btnReset');
+  err.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/auth/reset-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetTokenFromUrl, password: pass }),
+    }).then(r => r.json());
+    if (r.error) throw new Error(r.error);
+    history.replaceState(null, '', '/login');
+    showAuthPanel('loginPanel');
+    const loginErr = document.getElementById('loginErr');
+    loginErr.className = 'ok-box';
+    loginErr.textContent = 'Password updated — sign in with your new password.';
+    loginErr.style.display = 'block';
+  } catch (e) {
+    err.textContent = e.message; err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Set new password';
+  }
 });
-if (window.location.pathname === '/signup') document.getElementById('showSignup').click();
+
+document.getElementById('btnAcceptInvite').addEventListener('click', async () => {
+  const pass = document.getElementById('inviteAcceptPass').value;
+  const err  = document.getElementById('inviteAcceptErr');
+  const btn  = document.getElementById('btnAcceptInvite');
+  err.style.display = 'none';
+  btn.disabled = true; btn.textContent = 'Activating…';
+  try {
+    const r = await fetch('/api/auth/accept-invite', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: inviteTokenFromUrl, password: pass }),
+    }).then(r => r.json());
+    if (!r.token) throw new Error(r.error || 'Activation failed');
+    token = r.token; me = r.user;
+    localStorage.setItem('wToken', token);
+    localStorage.setItem('wUser', JSON.stringify(me));
+    history.replaceState(null, '', '/login');
+    routeAfterAuth();
+  } catch (e) {
+    err.textContent = e.message; err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Activate account';
+  }
+});
 
 document.getElementById('btnSignup').addEventListener('click', async () => {
   const orgName = document.getElementById('suOrgName').value.trim();
@@ -1253,10 +1398,13 @@ function closeLb()   { document.getElementById('lightbox').classList.remove('ope
 function userRow(u, opts) {
   const nameEsc = u.name.replace(/'/g, "\\'");
   const inactive = u.active === false;
+  const pending = u.inviteStatus === 'pending';
   let actions = '';
   if (u.role === 'manager') {
     actions = opts.canManageManagers
-      ? (inactive
+      ? (pending
+          ? `<button class="btn btn-ghost btn-sm" title="Regenerate and copy a fresh invite link — the old one stops working." onclick="reissueInvite('${u.id}','${nameEsc}')">Copy invite link</button>`
+          : inactive
           ? `<button class="btn btn-ghost btn-sm" title="Restores their dashboard login." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>`
           : `<button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red)" title="Blocks their dashboard login immediately. Their team and history are kept." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`)
       : '';
@@ -1267,18 +1415,24 @@ function userRow(u, opts) {
       : `<button class="btn btn-ghost btn-sm" title="Get the download links, server URL, and personal setup key to install the agent on their computer." onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
          <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Use this when someone leaves: blocks their access and stops the agent immediately, but keeps their past activity on file." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
   }
+  const consentPill = u.consentRecordedAt
+    ? `<span class="pill pill-green" title="Recorded ${u.consentRecordedAt.slice(0,10)} by ${u.consentRecordedBy || 'unknown'}${u.consentNote ? ' — ' + u.consentNote.replace(/"/g,'&quot;') : ''}">Recorded ${u.consentRecordedAt.slice(0,10)}</span>`
+    : `<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="No record yet that this person was told about monitoring and consented outside the app.">Not yet recorded</span>`;
+  const consentBtn = `<button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="openConsentModal('${u.id}','${nameEsc}')">${u.consentRecordedAt ? 'Update' : 'Record'}</button>`;
+
   return `
   <tr style="${inactive ? 'opacity:.55' : ''}">
     <td>${u.name}</td>
     <td style="color:var(--dim)">${u.email}</td>
     <td><span class="pill ${u.role === 'manager' ? 'pill-green' : 'pill-gray'}">${u.role}</span></td>
-    <td>${inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Access is blocked. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Active — can be tracked / can log in normally.">Active</span>'}</td>
+    <td>${pending ? '<span class="pill" style="background:rgba(234,179,8,.18);color:#a16207" title="They haven\'t set a password yet — send them the invite link.">Invited — not yet activated</span>' : inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Access is blocked. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Active — can be tracked / can log in normally.">Active</span>'}</td>
+    <td style="white-space:nowrap">${consentPill}${consentBtn}</td>
     <td style="text-align:right;white-space:nowrap">${actions}</td>
   </tr>`;
 }
 
 function userTable(rows) {
-  return `<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Consent</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function loadUserList() {
@@ -1320,6 +1474,32 @@ function copyField(id) {
   const text = document.getElementById(id).textContent;
   navigator.clipboard?.writeText(text);
 }
+// ── Consent modal ────────────────────────────────────────────────────────────
+let cnUserId = null;
+async function openConsentModal(userId, name) {
+  cnUserId = userId;
+  document.getElementById('cnTitle').textContent = `Monitoring consent — ${name}`;
+  document.getElementById('cnNote').value = '';
+  const users = await api('/api/users');
+  const u = users.find(x => x.id === userId);
+  document.getElementById('cnCurrent').textContent = u && u.consentRecordedAt
+    ? `Currently recorded: ${u.consentRecordedAt.slice(0,10)} by ${u.consentRecordedBy || 'unknown'}${u.consentNote ? ' — "' + u.consentNote + '"' : ''}`
+    : 'Not recorded yet.';
+  document.getElementById('consentModal').classList.add('open');
+}
+function closeConsentModal() { document.getElementById('consentModal').classList.remove('open'); cnUserId = null; }
+async function submitConsent() {
+  if (!cnUserId) return;
+  const note = document.getElementById('cnNote').value;
+  const r = await fetch(`/api/users/${cnUserId}/consent`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ note }),
+  }).then(r => r.json());
+  if (r.error) { alert(r.error); return; }
+  closeConsentModal();
+  loadUserList();
+}
+
 async function regenerateAgentKey() {
   if (!akUserId) return;
   if (!confirm('Regenerate this key? The old key will stop working immediately — the agent will need the new key entered before it can report again.')) return;
@@ -1412,32 +1592,41 @@ async function createEmployee() {
 async function createManager() {
   const name  = document.getElementById('newMgrName').value.trim();
   const email = document.getElementById('newMgrEmail').value.trim();
-  const pass  = document.getElementById('newMgrPass').value.trim();
   const err   = document.getElementById('addMgrErr');
   const ok    = document.getElementById('addMgrOk');
-  err.style.display = 'none'; ok.style.display = 'none';
+  const inviteResult = document.getElementById('addMgrInviteResult');
+  err.style.display = 'none'; ok.style.display = 'none'; inviteResult.style.display = 'none';
 
-  if (!name || !email || !pass) { err.textContent = 'All fields required.'; err.style.display = 'block'; return; }
+  if (!name || !email) { err.textContent = 'Name and email are required.'; err.style.display = 'block'; return; }
 
   const r = await fetch('/api/auth/register', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-    body: JSON.stringify({ name, email, password: pass, role: 'manager' }),
+    body: JSON.stringify({ name, email, role: 'manager' }),
   }).then(r => r.json());
 
   if (r.error) { err.textContent = r.error; err.style.display = 'block'; return; }
 
-  ok.textContent = `✓ ${name} added as a manager. They can log in at /login with the password you set.`;
+  ok.textContent = `✓ ${name} added as a manager — not yet active. Send them the invite link below so they can set their own password.`;
   ok.style.display = 'block';
+  if (r.inviteLink) {
+    document.getElementById('addMgrInviteLink').textContent = r.inviteLink;
+    inviteResult.style.display = 'block';
+  }
   document.getElementById('newMgrName').value  = '';
   document.getElementById('newMgrEmail').value = '';
-  document.getElementById('newMgrPass').value  = '';
   loadUserList();
   // Refresh the "Reports to" dropdown on the Add Employee form so the new manager is selectable.
   api('/api/users').then(users => {
     const mgrSel = document.getElementById('newEmpManager');
     mgrSel.innerHTML = users.filter(u => u.role === 'manager').map(u => `<option value="${u.id}">${u.name}</option>`).join('');
   });
+}
+
+async function reissueInvite(userId, name) {
+  const r = await api(`/api/users/${userId}/reissue-invite`, { method: 'POST' });
+  if (r.error) { alert(r.error); return; }
+  prompt(`Fresh invite link for ${name} — copy and send it to them:`, r.inviteLink);
 }
 
 async function deactivateUser(id, name) {
@@ -1577,7 +1766,16 @@ async function downloadWithAuth(url, fallbackName) {
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
-if (token && me) {
+// A reset link always wins, even over an existing logged-in session in the same
+// browser — someone following that link clearly wants to set a new password,
+// not silently land back in whichever account happened to still be signed in.
+if (resetTokenFromUrl) {
+  document.getElementById('authScreen').style.display = 'flex';
+  showAuthPanel('resetPanel');
+} else if (inviteTokenFromUrl) {
+  document.getElementById('authScreen').style.display = 'flex';
+  showAuthPanel('acceptInvitePanel');
+} else if (token && me) {
   fetch('/api/auth/session', { headers: { Authorization: `Bearer ${token}` } })
     .then(r => r.status === 401 ? logout() : routeAfterAuth())
     .catch(() => routeAfterAuth());
