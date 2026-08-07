@@ -145,27 +145,44 @@ function open(dataDir) {
   // above: no payment gateway exists yet, so this doesn't itself charge anyone
   // anything — it's what Acute's back office (and, later, real billing) goes by.
   ensureColumn('organizations', 'billingCycle', 'TEXT');
+  // Free trials run 7 days from signup — set once, never recomputed. Purely
+  // informational (the dashboard shows a banner once it passes); nothing in
+  // the app blocks access when a trial expires, per Ian's call.
+  ensureColumn('organizations', 'trialEndsAt', 'TEXT');
+  // Cancellation is metadata-only like everything else here (no payment
+  // gateway to actually stop charging), but it IS enforced in-app: there's no
+  // pro-rata refund, so an org keeps (and is expected to pay for) its full
+  // current term. cancelRequestedAt records when a superadmin cancelled it;
+  // accessUntil is the computed end of that term, after which auth() below
+  // actually cuts the org off. Both are null while status isn't 'canceled'.
+  ensureColumn('organizations', 'cancelRequestedAt', 'TEXT');
+  ensureColumn('organizations', 'accessUntil', 'TEXT');
 
   // ── Organizations ────────────────────────────────────────────────────────
   const stmtInsertOrg = db.prepare(`INSERT INTO organizations
-    (id, name, plan, seatLimit, permanentScreenshots, status, billingCycle, createdAt)
-    VALUES (@id, @name, @plan, @seatLimit, @permanentScreenshots, @status, @billingCycle, @createdAt)`);
+    (id, name, plan, seatLimit, permanentScreenshots, status, billingCycle, trialEndsAt, cancelRequestedAt, accessUntil, createdAt)
+    VALUES (@id, @name, @plan, @seatLimit, @permanentScreenshots, @status, @billingCycle, @trialEndsAt, @cancelRequestedAt, @accessUntil, @createdAt)`);
   const stmtGetOrg = db.prepare(`SELECT * FROM organizations WHERE id = ?`);
   const stmtListOrgs = db.prepare(`SELECT * FROM organizations ORDER BY createdAt ASC`);
   const stmtUpdateOrg = db.prepare(`UPDATE organizations SET
-    name=@name, plan=@plan, seatLimit=@seatLimit, permanentScreenshots=@permanentScreenshots, status=@status, billingCycle=@billingCycle
+    name=@name, plan=@plan, seatLimit=@seatLimit, permanentScreenshots=@permanentScreenshots, status=@status, billingCycle=@billingCycle,
+    trialEndsAt=@trialEndsAt, cancelRequestedAt=@cancelRequestedAt, accessUntil=@accessUntil
     WHERE id=@id`);
 
   function rowToOrg(r) {
     if (!r) return null;
-    return { ...r, permanentScreenshots: !!r.permanentScreenshots, billingCycle: r.billingCycle || 'monthly' };
+    return {
+      ...r, permanentScreenshots: !!r.permanentScreenshots, billingCycle: r.billingCycle || 'monthly',
+      trialEndsAt: r.trialEndsAt || null, cancelRequestedAt: r.cancelRequestedAt || null, accessUntil: r.accessUntil || null,
+    };
   }
 
-  function createOrg({ id, name, plan, seatLimit, permanentScreenshots, status, billingCycle }) {
+  function createOrg({ id, name, plan, seatLimit, permanentScreenshots, status, billingCycle, trialEndsAt }) {
     const row = {
       id: id || crypto.randomUUID(), name, plan: plan || 'trial',
       seatLimit: seatLimit ?? null, permanentScreenshots: permanentScreenshots ? 1 : 0,
       status: status || 'trialing', billingCycle: billingCycle === 'annual' ? 'annual' : 'monthly',
+      trialEndsAt: trialEndsAt || null, cancelRequestedAt: null, accessUntil: null,
       createdAt: new Date().toISOString(),
     };
     stmtInsertOrg.run(row);
@@ -174,7 +191,10 @@ function open(dataDir) {
   function getOrg(id) { return rowToOrg(stmtGetOrg.get(id)); }
   function listOrgs() { return stmtListOrgs.all().map(rowToOrg); }
   function updateOrg(org) {
-    stmtUpdateOrg.run({ ...org, permanentScreenshots: org.permanentScreenshots ? 1 : 0, billingCycle: org.billingCycle === 'annual' ? 'annual' : 'monthly' });
+    stmtUpdateOrg.run({
+      ...org, permanentScreenshots: org.permanentScreenshots ? 1 : 0, billingCycle: org.billingCycle === 'annual' ? 'annual' : 'monthly',
+      trialEndsAt: org.trialEndsAt || null, cancelRequestedAt: org.cancelRequestedAt || null, accessUntil: org.accessUntil || null,
+    });
     return getOrg(org.id);
   }
 

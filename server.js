@@ -169,6 +169,49 @@ function ensurePlatformOrg() {
   }
 }
 
+// ── Trial length & no-pro-rata cancellation ─────────────────────────────────
+// Free trials run exactly 7 days from signup (trialEndsAt is set once, at
+// signup, and never recomputed). Nothing in the app blocks a trialing org once
+// that date passes — it's surfaced as a dashboard banner only, so a firm that
+// forgets to convert doesn't lose access before Acute has had a chance to
+// reach out.
+const TRIAL_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Cancellation, by contrast, IS enforced: there's no payment gateway to stop
+// charging pro-rata, so the policy is simply that an org keeps (and is
+// expected to pay for) its full current term — monthly subscribers keep
+// access to the end of the current month, annual subscribers to the end of
+// the current year. computeAccessUntil finds the next term boundary after
+// `fromDate`, counting in fixed-length periods from the org's signup date
+// (the only anchor we have without real billing/renewal tracking).
+function computeAccessUntil(org, fromDate) {
+  const periodMs = (org.billingCycle === 'annual' ? 365 : 30) * 24 * 60 * 60 * 1000;
+  let periodEnd = new Date(org.createdAt).getTime();
+  const from = fromDate.getTime();
+  while (periodEnd <= from) periodEnd += periodMs;
+  return new Date(periodEnd).toISOString();
+}
+
+// True once a canceled org's paid-through date has actually passed — this is
+// the one place cancellation turns into a real access cutoff (see auth() and
+// the login route below).
+function orgAccessExpired(org) {
+  return !!(org && org.status === 'canceled' && org.accessUntil && new Date(org.accessUntil) <= new Date());
+}
+
+// The subset of org fields the dashboard (not the superadmin console, which
+// gets the full picture from /api/admin/orgs) needs to show trial/cancellation
+// banners. Returns null for the platform org itself (superadmin has no
+// "subscription" of its own).
+function orgSummaryFor(organizationId) {
+  const org = organizationId && db.getOrg(organizationId);
+  if (!org || org.id === PLATFORM_ORG_ID) return null;
+  return {
+    id: org.id, status: org.status, billingCycle: org.billingCycle,
+    trialEndsAt: org.trialEndsAt, cancelRequestedAt: org.cancelRequestedAt, accessUntil: org.accessUntil,
+  };
+}
+
 // Bootstraps the very first superadmin (Acute's own back-office login) and, on
 // pre-multi-tenant installs, the first Partner/Director — mirroring the old
 // migrateHierarchy() bootstrap so nothing regresses for an install that already
@@ -298,6 +341,8 @@ function auth(req, res, next) {
     const user = db.findUserByAgentToken(token);
     if (!user) return res.status(401).json({ error: 'Invalid agent token' });
     if (user.active === false) return res.status(401).json({ error: 'Account deactivated' });
+    if (orgAccessExpired(db.getOrg(user.organizationId)))
+      return res.status(403).json({ error: "This organization's subscription has ended." });
     req.user = { id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId, viaAgent: true };
     return next();
   }
@@ -311,6 +356,11 @@ function auth(req, res, next) {
   const u = db.findUserById(payload.id);
   if (!u) return res.status(401).json({ error: 'Invalid or expired token' });
   if (u.active === false) return res.status(401).json({ error: 'Account deactivated' });
+  // Cancellation isn't pro-rata — an org keeps access through the end of its current
+  // paid term (see computeAccessUntil above) and only actually gets cut off once that
+  // date passes. Superadmin's own org is never 'canceled', so this never affects it.
+  if (orgAccessExpired(db.getOrg(u.organizationId)))
+    return res.status(403).json({ error: "This organization's subscription has ended. Contact Acute to reactivate." });
   // Always trust the freshly-loaded organizationId/role over the (possibly days-old) JWT
   // payload, defensively — there's no role-change endpoint today, but this costs nothing.
   req.user = { id: u.id, name: u.name, email: u.email, role: u.role, organizationId: u.organizationId };
@@ -437,7 +487,7 @@ app.post('/api/auth/accept-invite', async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 10);
   db.updateUser({ ...user, passwordHash, resetTokenHash: null, resetTokenExpiresAt: null, inviteStatus: null });
   const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role }, organization: orgSummaryFor(user.organizationId) });
 });
 
 // Public self-serve signup: creates a brand-new organization plus its first Partner
@@ -458,12 +508,17 @@ app.post('/api/auth/signup', async (req, res) => {
   // uses it to know how to invoice once real billing is wired up.
   billingCycle = billingCycle === 'annual' ? 'annual' : 'monthly';
 
-  const org = db.createOrg({ name: orgName.trim(), plan, seatLimit: null, permanentScreenshots: false, status: 'trialing', billingCycle });
+  // Free trial is 7 days from right now — set once and never recomputed. Signup
+  // already requires a name, email, and password, so "requires signup" (i.e. we
+  // have that person's details before the trial clock even starts) is satisfied
+  // by the checks above; this just stamps when the 7 days runs out.
+  const trialEndsAt = new Date(Date.now() + TRIAL_DAYS_MS).toISOString();
+  const org = db.createOrg({ name: orgName.trim(), plan, seatLimit: null, permanentScreenshots: false, status: 'trialing', billingCycle, trialEndsAt });
   const passwordHash = await bcrypt.hash(password, 10);
   const partner = db.insertUser({ organizationId: org.id, name: name.trim(), email: email.toLowerCase().trim(), passwordHash, role: 'partner' });
 
   const token = jwt.sign({ id: partner.id, name: partner.name, email: partner.email, role: partner.role, organizationId: org.id }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { id: org.id, name: org.name, plan: org.plan, status: org.status, billingCycle: org.billingCycle } });
+  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { id: org.id, name: org.name, plan: org.plan, status: org.status, billingCycle: org.billingCycle, trialEndsAt: org.trialEndsAt } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -477,8 +532,12 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid email or password' });
   if (user.active === false)
     return res.status(403).json({ error: 'This account has been deactivated. Contact your manager.' });
+  // Same no-pro-rata cutoff as auth() below, checked here too so a cut-off org gets a
+  // clear message at login instead of a token that then 403s on its first real request.
+  if (user.role !== 'superadmin' && orgAccessExpired(db.getOrg(user.organizationId)))
+    return res.status(403).json({ error: "This organization's subscription has ended. Contact Acute to reactivate." });
   const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, popiaAcknowledgedAt: user.popiaAcknowledgedAt || null } });
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, popiaAcknowledgedAt: user.popiaAcknowledgedAt || null }, organization: orgSummaryFor(user.organizationId) });
 });
 
 // Self-service password reset. There's no transactional email provider wired
@@ -534,7 +593,7 @@ app.post('/api/auth/popia-ack', auth, (req, res) => {
 // /api/users, which 403s for superadmin since superadmin isn't scoped to an
 // organization at all.
 app.get('/api/auth/session', auth, (req, res) => {
-  res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role } });
+  res.json({ user: { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role }, organization: orgSummaryFor(req.user.organizationId) });
 });
 
 // ── Users ──────────────────────────────────────────────────────
@@ -996,6 +1055,7 @@ app.get('/api/admin/orgs', auth, superAdminOnly, (req, res) => {
     return {
       id: o.id, name: o.name, plan: o.plan, status: o.status, seatLimit: o.seatLimit,
       permanentScreenshots: o.permanentScreenshots, billingCycle: o.billingCycle, createdAt: o.createdAt,
+      trialEndsAt: o.trialEndsAt, cancelRequestedAt: o.cancelRequestedAt, accessUntil: o.accessUntil,
       managerCount: users.filter(u => u.role === 'manager' || u.role === 'partner').length,
       employeeCount: users.filter(u => u.role === 'employee' && u.active !== false).length,
     };
@@ -1012,13 +1072,32 @@ app.patch('/api/admin/orgs/:id', auth, superAdminOnly, (req, res) => {
   if (plan !== undefined && !ADMIN_PLANS.has(plan)) return res.status(400).json({ error: 'Invalid plan' });
   if (status !== undefined && !ADMIN_STATUSES.has(status)) return res.status(400).json({ error: 'Invalid status' });
   if (billingCycle !== undefined && !ADMIN_BILLING_CYCLES.has(billingCycle)) return res.status(400).json({ error: 'Invalid billing cycle' });
+  const nextStatus = status ?? org.status;
+  const nextBillingCycle = billingCycle ?? org.billingCycle;
+  // No pro-rata refunds: cancelling doesn't cut an org off immediately, it just locks in
+  // the date their current term (month or year, from whichever billing cycle is in
+  // effect right now) runs out — access continues until then (enforced in auth() and
+  // the login route above). Only stamp this the moment status actually *becomes*
+  // 'canceled'; re-saving an already-canceled org must not push accessUntil forward.
+  // Reactivating (status moving away from 'canceled') clears both fields again.
+  let cancelRequestedAt = org.cancelRequestedAt;
+  let accessUntil = org.accessUntil;
+  if (nextStatus === 'canceled' && org.status !== 'canceled') {
+    cancelRequestedAt = new Date().toISOString();
+    accessUntil = computeAccessUntil({ ...org, billingCycle: nextBillingCycle }, new Date());
+  } else if (nextStatus !== 'canceled' && org.status === 'canceled') {
+    cancelRequestedAt = null;
+    accessUntil = null;
+  }
   const updated = db.updateOrg({
     id: org.id, name: org.name,
     plan: plan ?? org.plan,
     seatLimit: seatLimit !== undefined ? seatLimit : org.seatLimit,
     permanentScreenshots: permanentScreenshots !== undefined ? !!permanentScreenshots : org.permanentScreenshots,
-    status: status ?? org.status,
-    billingCycle: billingCycle ?? org.billingCycle,
+    status: nextStatus,
+    billingCycle: nextBillingCycle,
+    trialEndsAt: org.trialEndsAt,
+    cancelRequestedAt, accessUntil,
   });
   res.json(updated);
 });
