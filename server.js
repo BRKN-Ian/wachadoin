@@ -86,6 +86,23 @@ const SUGGESTED_RULES = [
   { pattern: 'indeed.com',       category: 'redflag' },
   { pattern: 'glassdoor',        category: 'redflag' },
   { pattern: 'ziprecruiter',     category: 'redflag' },
+  // 'sensitive' rules never affect the work/redflag productivity flag (see
+  // classify(), which only matches work/redflag rows) — they exist purely to
+  // tell the desktop Agent which apps/sites should never be screenshotted.
+  // Starter list covers the SA tax/accounting software this product's actual
+  // client base runs; each firm can add or remove entries from their own list.
+  { pattern: 'sars efiling',     category: 'sensitive' },
+  { pattern: 'easyfile',         category: 'sensitive' },
+  { pattern: 'pastel',           category: 'sensitive' },
+  { pattern: 'sage evolution',   category: 'sensitive' },
+  { pattern: 'sage one',         category: 'sensitive' },
+  { pattern: 'sage accounting',  category: 'sensitive' },
+  { pattern: 'xero',             category: 'sensitive' },
+  { pattern: 'draftworx',        category: 'sensitive' },
+  { pattern: 'caseware',         category: 'sensitive' },
+  { pattern: 'greatsoft',        category: 'sensitive' },
+  { pattern: 'taxplanner',       category: 'sensitive' },
+  { pattern: 'simplepay',        category: 'sensitive' },
 ];
 
 function ensureRules(orgId) {
@@ -99,9 +116,20 @@ function ensureRules(orgId) {
 function classify(orgId, appName, title) {
   const hay = `${appName || ''} ${title || ''}`.toLowerCase();
   for (const r of ensureRules(orgId)) {
-    if (hay.includes(r.pattern.toLowerCase())) return r.category;
+    // 'sensitive' rows are a separate concern (see isSensitiveApp) — skip them
+    // here so they never show up as this employee's work/redflag flag.
+    if ((r.category === 'work' || r.category === 'redflag') && hay.includes(r.pattern.toLowerCase())) return r.category;
   }
   return 'neutral';
+}
+
+// Screenshot-exclusion check: does this app/window match one of the org's
+// 'sensitive' rules? Used both by the dashboard (to show which rules exist)
+// and indirectly by the Agent, which fetches the raw pattern list itself via
+// GET /api/agent/config and does the same match locally before capturing.
+function isSensitiveApp(orgId, appName, title) {
+  const hay = `${appName || ''} ${title || ''}`.toLowerCase();
+  return ensureRules(orgId).some(r => r.category === 'sensitive' && hay.includes(r.pattern.toLowerCase()));
 }
 
 // ── One-time migration: old flat-JSON single-organization installs ─────────
@@ -305,6 +333,7 @@ function sweepRetention() {
       db.deleteScreenshotRecord(filename);
       try { fs.unlinkSync(path.join(SHOTS_DIR, filename)); } catch {}
     }
+    db.pruneScreenshotSkips(org.id, shotCutoffIso);
   }
 }
 // Belt-and-braces sweep of orphaned screenshot files on disk (e.g. a DB row lost to a
@@ -836,6 +865,18 @@ app.post('/api/users/:id/agent-token/regenerate', auth, managerOrAbove, (req, re
   res.json({ agentToken, serverUrl: `${req.protocol}://${req.get('host')}` });
 });
 
+// Polled periodically by the desktop Agent (plain `auth` so an agent token
+// works here same as it does for POST /api/activity) so it knows which
+// apps/windows count as 'sensitive' for this org and should never be
+// screenshotted. Kept deliberately tiny — just the pattern strings, nothing
+// that requires a new Agent release to change when a firm edits their list.
+app.get('/api/agent/config', auth, (req, res) => {
+  const sensitivePatterns = ensureRules(req.user.organizationId)
+    .filter(r => r.category === 'sensitive')
+    .map(r => r.pattern);
+  res.json({ sensitivePatterns });
+});
+
 app.post('/api/users/:id/deactivate', auth, managerOrAbove, (req, res) => {
   const user = db.findUserById(req.params.id);
   // Org-ownership check runs first, before any role-specific message — the
@@ -1108,6 +1149,17 @@ app.post('/api/activity', auth, (req, res) => {
     }
   }
 
+  // The Agent sends this instead of 'screenshot' when the focused app/window
+  // matched a 'sensitive' rule at capture time — no image ever left the
+  // employee's machine. Recorded so the gap in the gallery reads as a
+  // deliberate policy rather than a missing screenshot (see GET
+  // /api/activity/screenshots, which merges these in alongside real shots).
+  if (type === 'screenshot_skipped') {
+    const { appName, title } = req.body;
+    db.insertScreenshotSkip({ organizationId, userId, userName, appName: appName || null, title: title || null, ts: now });
+    return res.json({ ok: true });
+  }
+
   res.status(400).json({ error: 'Unknown type' });
 });
 
@@ -1140,7 +1192,7 @@ app.put('/api/settings/rules', auth, managerOrAbove, (req, res) => {
   const { rules } = req.body;
   if (!Array.isArray(rules)) return res.status(400).json({ error: 'rules array required' });
   const clean = rules
-    .filter(r => r && r.pattern && (r.category === 'work' || r.category === 'redflag'))
+    .filter(r => r && r.pattern && (r.category === 'work' || r.category === 'redflag' || r.category === 'sensitive'))
     .map(r => ({ id: r.id || crypto.randomUUID(), organizationId: req.user.organizationId, pattern: r.pattern.trim(), category: r.category }));
   db.replaceRules(req.user.organizationId, clean);
   res.json(clean);
@@ -1207,16 +1259,26 @@ app.get('/api/activity/appusage', auth, managerOrAbove, (req, res) => {
 app.get('/api/activity/screenshots', auth, managerOrAbove, (req, res) => {
   const { from, to } = resolveRange(req);
   let shots = db.listScreenshotsByOrgRange(req.user.organizationId, from, to);
+  let skips = db.listScreenshotSkipsByOrgRange(req.user.organizationId, from, to);
   if (req.query.userId) {
     const target = db.findUserById(req.query.userId);
     if (!target || (!canManage(req.user, target) && target.id !== req.user.id))
       return res.status(403).json({ error: 'Not allowed to view this user' });
     shots = shots.filter(s => s.userId === req.query.userId);
+    skips = skips.filter(s => s.userId === req.query.userId);
   } else if (req.user.role === 'manager') {
     const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
     shots = shots.filter(s => ids.has(s.userId));
+    skips = skips.filter(s => ids.has(s.userId));
   }
-  res.json(shots);
+  // Merge skip placeholders in alongside real screenshots, newest first, so a
+  // gap in the gallery reads as "screenshot deliberately skipped" rather than
+  // just... missing. Marked with skipped:true; no filename (there's no image).
+  const merged = [
+    ...shots.map(s => ({ ...s, skipped: false })),
+    ...skips.map(s => ({ ...s, skipped: true, filename: null, screenName: null })),
+  ].sort((a, b) => new Date(b.ts) - new Date(a.ts));
+  res.json(merged);
 });
 
 // ── Evidence export ─────────────────────────────────────────────────────────

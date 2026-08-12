@@ -118,6 +118,23 @@ function open(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS idx_rules_org ON rules(organizationId);
 
+    -- One row per screenshot the Agent deliberately skipped because a
+    -- 'sensitive' rule matched the focused app/window — no image ever
+    -- existed for these. Kept separate from 'screenshots' (rather than a
+    -- nullable-filename row there) so the two stay simple: 'screenshots' is
+    -- always a real, existing file on disk.
+    CREATE TABLE IF NOT EXISTS screenshot_skips (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      organizationId TEXT NOT NULL,
+      userId TEXT NOT NULL,
+      userName TEXT,
+      appName TEXT,
+      title TEXT,
+      ts TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shot_skips_org_ts ON screenshot_skips(organizationId, ts);
+    CREATE INDEX IF NOT EXISTS idx_shot_skips_user_ts ON screenshot_skips(userId, ts);
+
     CREATE TABLE IF NOT EXISTS alert_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       organizationId TEXT NOT NULL,
@@ -392,6 +409,18 @@ function open(dataDir) {
   function deleteScreenshotRecord(filename) { stmtDeleteShot.run(filename); }
   function expiredScreenshotFilenames(orgId, cutoffIso) { return stmtExpiredShots.all(orgId, cutoffIso).map(r => r.filename); }
 
+  // ── Screenshot skips ─────────────────────────────────────────────────────
+  const stmtInsertShotSkip = db.prepare(`INSERT INTO screenshot_skips
+    (organizationId, userId, userName, appName, title, ts)
+    VALUES (@organizationId, @userId, @userName, @appName, @title, @ts)`);
+  const stmtListShotSkipsOrgRange = db.prepare(
+    `SELECT * FROM screenshot_skips WHERE organizationId = ? AND substr(ts,1,10) BETWEEN ? AND ? ORDER BY ts DESC`);
+  const stmtPruneShotSkips = db.prepare(`DELETE FROM screenshot_skips WHERE organizationId = ? AND ts < ?`);
+
+  function insertScreenshotSkip(row) { stmtInsertShotSkip.run(row); }
+  function listScreenshotSkipsByOrgRange(orgId, from, to) { return stmtListShotSkipsOrgRange.all(orgId, from, to); }
+  function pruneScreenshotSkips(orgId, cutoffIso) { stmtPruneShotSkips.run(orgId, cutoffIso); }
+
   // ── Rules ────────────────────────────────────────────────────────────────
   const stmtInsertRule = db.prepare(`INSERT INTO rules (id, organizationId, pattern, category) VALUES (@id, @organizationId, @pattern, @category)`);
   const stmtListRules = db.prepare(`SELECT * FROM rules WHERE organizationId = ?`);
@@ -437,6 +466,7 @@ function open(dataDir) {
     insertHeartbeat, listHeartbeatsByOrgRange, latestHeartbeatsByOrg, pruneHeartbeats,
     insertAppEvent, listAppEventsByOrgRange, latestAppEventsByOrg, pruneAppEvents,
     insertScreenshotRecord, listScreenshotsByOrgRange, listRecentScreenshotsByOrg, deleteScreenshotRecord, expiredScreenshotFilenames,
+    insertScreenshotSkip, listScreenshotSkipsByOrgRange, pruneScreenshotSkips,
     insertRule, listRules, replaceRules,
     insertAlertLog, lastAlertFiredAt, alertCountsForRecipientSince,
   };
