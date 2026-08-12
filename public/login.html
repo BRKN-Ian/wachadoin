@@ -596,7 +596,7 @@ tr:hover td { background: rgba(0,194,196,.05); }
     <div class="page" id="pgRules">
       <div class="page-header">
         <div><div class="page-title">Monitoring Rules</div><div class="page-sub">Classify apps &amp; window titles so off-task time stands out automatically</div></div>
-        <button class="btn btn-ghost btn-sm" title="One click adds a generic starter list: Slack/Teams/Zoom etc. as work-related, YouTube/Facebook/job sites etc. as red flags, and common SA tax/accounting software (SARS eFiling, Pastel, Xero, CaseWare, etc.) as sensitive/no-screenshot. You can edit or remove any of them afterwards." onclick="loadSuggestedRules()">+ Add suggested starter list</button>
+        <button class="btn btn-ghost btn-sm" title="One click adds a generic starter list: Slack/Teams/Zoom etc. as work-related, and YouTube/Facebook/job sites etc. as red flags. You can edit or remove any of them afterwards." onclick="loadSuggestedRules()">+ Add suggested starter list</button>
       </div>
       <p style="color:var(--dim);margin-bottom:20px;max-width:720px">Wachadoin matches each employee's active window title (app name + page/site title) against the patterns below. <strong>Work-related</strong> matches show green; <strong>red flags</strong> show red on Live Status and App Usage so you can spot social media, side-work on unrelated software, or job-hunting at a glance. Matching is a simple "contains" check and is not case-sensitive — typing "slack" also matches "Slack" and "MySlackWorkspace".</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px">
@@ -617,13 +617,13 @@ tr:hover td { background: rgba(0,194,196,.05); }
           <div id="flagRulesList"></div>
         </div>
         <div class="card">
-          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--primary)">🔒 Sensitive apps — no screenshots<span class="info-dot" tabindex="0" data-tip="Add words for software that shows client-confidential data — tax filing, accounting packages, SARS eFiling. The Agent checks this before every screenshot and skips it entirely (no image is ever taken) when a matching app or site is focused. A placeholder shows in Screenshots explaining why.">i</span></h3>
+          <h3 style="font-size:15px;font-weight:600;margin-bottom:12px;color:var(--primary)">🔒 Sensitive apps — no screenshots<span class="info-dot" tabindex="0" data-tip="Add words for things genuinely outside your work with clients — personal banking, personal email or medical portals, and similar. Deliberately NOT meant for your own accounting/tax software: screenshots of those are usually the point, since that's how you'd catch unauthorized side-work on client systems during paid hours. The Agent checks this before every screenshot and skips it entirely (no image is ever taken) when a matching app or site is focused. A placeholder shows in Screenshots explaining why.">i</span></h3>
           <div class="key-row">
-            <input id="newSensitivePattern" type="text" placeholder="e.g. sars efiling, pastel" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
+            <input id="newSensitivePattern" type="text" placeholder="e.g. personal banking" style="margin:0" title="Type one word or short phrase, then click Add. It'll match anywhere in the app name or window title.">
             <button class="btn btn-ghost btn-sm" onclick="addRule('sensitive')">Add</button>
           </div>
           <div id="sensitiveRulesList"></div>
-          <p style="font-size:12px;color:var(--dim);margin-top:10px">Doesn't affect anyone's tracked hours or work/red-flag totals — it only stops screenshots. Already installed the Agent? This needs the latest Agent version to take effect.</p>
+          <p style="font-size:12px;color:var(--dim);margin-top:10px">Doesn't affect anyone's tracked hours or work/red-flag totals — it only stops screenshots. Empty by default; most firms won't need to add anything here. Already installed the Agent? This needs the latest Agent version to take effect.</p>
         </div>
       </div>
     </div>
@@ -768,7 +768,7 @@ tr:hover td { background: rgba(0,194,196,.05); }
         <ul>
           <li><strong>Work-related:</strong> slack, microsoft teams, zoom, outlook, notion, asana, salesforce, github</li>
           <li><strong>Red flags:</strong> youtube, facebook, instagram, tiktok, netflix — plus job sites like indeed, linkedin jobs, glassdoor (useful for spotting morale issues early, not just distraction)</li>
-          <li><strong>Sensitive apps (no screenshots):</strong> sars efiling, pastel, sage, xero, draftworx, caseware, greatsoft — the same "contains" matching, but instead of colour-coding time it tells the Agent to skip that screenshot entirely. Requires everyone's Agent to be on the latest version.</li>
+          <li><strong>Sensitive apps (no screenshots):</strong> for things genuinely outside your work with clients — personal banking, personal email/medical portals, and the like. Same "contains" matching, but instead of colour-coding time it tells the Agent to skip that screenshot entirely. Deliberately not meant for your own accounting/tax software — screenshots there are usually the point. Requires everyone's Agent to be on the latest version.</li>
         </ul>
       </div>
 
