@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /login
+Disallow: /signup
+Disallow: /login.html
+Disallow: /api/
+
+Sitemap: https://wachadoin.com/sitemap.xml
