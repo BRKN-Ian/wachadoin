@@ -6,6 +6,7 @@ const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const archiver = require('archiver');
 const PDFDocument = require('pdfkit');
+const helmet   = require('helmet');
 const dbLib    = require('./db');
 const { issueToken, hashToken, verifyToken, rateLimited } = require('./lib/tokens');
 const { ALERT_DEFAULTS, resolveAlertSettings, weekendAdjustedElapsedMs, isDigestDueNow } = require('./lib/alerts');
@@ -227,7 +228,10 @@ function bootstrapAccounts() {
     const password = process.env.SUPERADMIN_PASSWORD || crypto.randomBytes(6).toString('hex');
     const passwordHash = bcrypt.hashSync(password, 10);
     db.insertUser({ organizationId: PLATFORM_ORG_ID, name: 'Wachadoin Admin', email, passwordHash, role: 'superadmin', agentToken: genAgentToken() });
-    console.log(`[Wachadoin] Bootstrapped a superadmin account — email: ${email}, password: ${password}. This is only logged once; note it down (or set SUPERADMIN_EMAIL/SUPERADMIN_PASSWORD before this first runs to control it yourself).`);
+    // Never log the real password — Render's logs are retained and viewable by
+    // anyone with dashboard access. If SUPERADMIN_PASSWORD wasn't set to control
+    // it directly, use the normal "forgot password" flow on this email to set one.
+    console.log(`[Wachadoin] Bootstrapped a superadmin account — email: ${email}. Set SUPERADMIN_PASSWORD in the environment to control the password directly, or use "Forgot password" on this email to set one now.`);
   }
 
   // Legacy-internal org: backfill managerId on any employee that predates the
@@ -247,15 +251,18 @@ function bootstrapAccounts() {
       const password = process.env.PARTNER_PASSWORD || crypto.randomBytes(6).toString('hex');
       const passwordHash = bcrypt.hashSync(password, 10);
       db.insertUser({ organizationId: org.id, name: 'Director', email, passwordHash, role: 'partner', agentToken: genAgentToken() });
-      console.log(`[Wachadoin] Bootstrapped a Partner/Director account for org "${org.name}" — email: ${email}, password: ${password}.`);
+      console.log(`[Wachadoin] Bootstrapped a Partner/Director account for org "${org.name}" — email: ${email}. Set PARTNER_PASSWORD in the environment to control the password directly, or use "Forgot password" on this email to set one now.`);
     }
   }
 }
 bootstrapAccounts();
 
-// Demo data for a genuinely fresh install (no legacy JSON, no orgs at all) — useful
-// for local dev/testing. Real customer organizations always come from /api/auth/signup.
+// Demo data for local dev/testing only — never runs against a real deployment
+// unless explicitly opted into with SEED_DEMO=true, even on a totally fresh
+// database, since it creates guessable admin123/director123 accounts.
+// Real customer organizations always come from /api/auth/signup.
 function maybeSeedDemoOrg() {
+  if (process.env.SEED_DEMO !== 'true') return;
   const realOrgs = db.listOrgs().filter(o => o.id !== PLATFORM_ORG_ID);
   if (realOrgs.length > 0) return;
 
@@ -322,9 +329,24 @@ sweepRetention();
 sweepOrphanedScreenshotFiles();
 setInterval(() => { sweepRetention(); sweepOrphanedScreenshotFiles(); }, 24 * 60 * 60 * 1000);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'timetrack-secret-please-change-me';
+// No hardcoded fallback: a shipped-in-source secret would let anyone who's
+// read the code forge a valid login for any user, including superadmin.
+// Refuse to start rather than silently sign tokens with a guessable secret.
+if (!process.env.JWT_SECRET) {
+  console.error('[Wachadoin] FATAL: JWT_SECRET is not set. Refusing to start — set a strong random JWT_SECRET in the environment and redeploy.');
+  process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // ── Middleware ─────────────────────────────────────────────────
+// contentSecurityPolicy is off for now: login.html's dashboard is one large
+// inline <script> plus ~36 inline onclick= handlers, and a default CSP would
+// block all of it. Everything else helmet sets by default (HSTS, X-Frame-
+// Options/frameguard, X-Content-Type-Options, disabling X-Powered-By, etc.)
+// is a real improvement with zero risk to the current frontend. A real CSP
+// is worth doing later, but it means moving those inline handlers to
+// addEventListener first — a frontend refactor of its own.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -685,6 +707,12 @@ app.post('/api/auth/signup', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
+  // Unlimited password guessing against a known email was previously possible —
+  // cap attempts per email, same rateLimited() helper already used for
+  // forgot-password/reissue-invite (see lib/tokens.js).
+  if (rateLimited(`login:${(email || '').toString().toLowerCase()}`, { max: 10, windowMs: 15 * 60 * 1000 })) {
+    return res.status(429).json({ error: 'Too many login attempts — try again in a few minutes.' });
+  }
   const user = db.findUserByEmail(email);
   if (user && user.role === 'employee')
     return res.status(403).json({ error: "Staff accounts don't have a dashboard login — ask your manager for your Agent Key instead." });
@@ -707,7 +735,7 @@ app.post('/api/auth/login', async (req, res) => {
 // of being emailed — a deliberate, temporary stopgap (see resetLink below).
 // Swapping in real email later is a one-line change: stop returning resetLink
 // and call a sendEmail() with it instead. The token itself is unaffected.
-app.post('/api/auth/forgot-password', (req, res) => {
+app.post('/api/auth/forgot-password', async (req, res) => {
   const email = (req.body?.email || '').toString();
   if (rateLimited(`forgot:${email.toLowerCase()}`)) {
     return res.status(429).json({ error: 'Too many attempts — try again in a few minutes.' });
@@ -720,8 +748,17 @@ app.post('/api/auth/forgot-password', (req, res) => {
     const { raw, hash } = issueToken();
     const resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     db.updateUser({ ...user, resetTokenHash: hash, resetTokenExpiresAt });
-    // STOPGAP: no email provider configured yet — hand the link straight back.
-    response.resetLink = `${req.protocol}://${req.get('host')}/login?reset=${raw}`;
+    const resetLink = `${req.protocol}://${req.get('host')}/login?reset=${raw}`;
+    // Resend is live now — email the link to the account owner instead of
+    // handing it back in the API response (that let anyone who merely knew a
+    // victim's email address reset their password with no inbox access at all).
+    await mailer.sendMail({
+      to: user.email,
+      subject: 'Reset your Wachadoin password',
+      html: `<p>Someone (hopefully you) asked to reset the password on your Wachadoin account.</p>
+             <p><a href="${resetLink}">Click here to choose a new password</a>. This link expires in 30 minutes.</p>
+             <p>If you didn't request this, you can safely ignore this email — your password hasn't been changed.</p>`,
+    });
   }
   res.json(response);
 });
@@ -801,7 +838,12 @@ app.post('/api/users/:id/agent-token/regenerate', auth, managerOrAbove, (req, re
 
 app.post('/api/users/:id/deactivate', auth, managerOrAbove, (req, res) => {
   const user = db.findUserById(req.params.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  // Org-ownership check runs first, before any role-specific message — the
+  // old order let a manager/partner learn whether a foreign-org id existed at
+  // all, and roughly what role it had, purely from which error came back.
+  // A 404 now covers both "doesn't exist" and "not yours to see" up front;
+  // canManage() below still enforces the finer-grained same-org rules.
+  if (!user || user.organizationId !== req.user.organizationId) return res.status(404).json({ error: 'User not found' });
   if (user.role === 'partner') return res.status(400).json({ error: 'Cannot deactivate a partner account' });
   if (req.user.role === 'manager' && user.role !== 'employee') return res.status(400).json({ error: 'Managers can only deactivate their own staff' });
   if (!canManage(req.user, user)) return res.status(403).json({ error: 'Not allowed' });
@@ -834,7 +876,9 @@ app.post('/api/users/:id/consent', auth, managerOrAbove, (req, res) => {
 
 app.delete('/api/users/:id', auth, managerOrAbove, (req, res) => {
   const target = db.findUserById(req.params.id);
-  if (!target) return res.status(404).json({ error: 'User not found' });
+  // Same reordering as /deactivate above — org check first, so a foreign-org
+  // id can't be distinguished from a nonexistent one before canManage() runs.
+  if (!target || target.organizationId !== req.user.organizationId) return res.status(404).json({ error: 'User not found' });
   if (target.role === 'partner') return res.status(400).json({ error: 'Cannot delete a partner account' });
   if (req.user.role === 'manager' && target.role !== 'employee') return res.status(400).json({ error: 'Managers can only remove their own staff' });
   if (!canManage(req.user, target)) return res.status(403).json({ error: 'Not allowed' });
@@ -935,15 +979,33 @@ app.get('/api/entries/all', auth, managerOrAbove, (req, res) => {
 });
 
 // ── Screenshots ────────────────────────────────────────────────
+// screenIndex arrives from the client as free-form input; despite the name,
+// splicing it unsanitized into a filename let a "../../.." value escape
+// SHOTS_DIR entirely via path.join. Clamp it to a small positive integer.
+function safeScreenIndex(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, 20);
+}
+
 app.post('/api/screenshots', auth, (req, res) => {
   const { entryId, base64, screenIndex } = req.body;
   if (!base64) return res.status(400).json({ error: 'No image data' });
-  const safeScreen = `screen${screenIndex || 1}`;
-  const filename = `${req.user.id}_${Date.now()}_${safeScreen}.jpg`;
+  const idx = safeScreenIndex(screenIndex);
+  const filename = `${req.user.id}_${Date.now()}_screen${idx}.jpg`;
   try {
     fs.writeFileSync(path.join(SHOTS_DIR, filename), Buffer.from(base64, 'base64'));
-    db.insertScreenshotRecord({ filename, organizationId: req.user.organizationId, userId: req.user.id, userName: req.user.name, screenIndex: screenIndex || 1, screenName: `Screen ${screenIndex || 1}`, ts: new Date().toISOString() });
-    if (entryId) db.bumpScreenshotCount(entryId);
+    db.insertScreenshotRecord({ filename, organizationId: req.user.organizationId, userId: req.user.id, userName: req.user.name, screenIndex: idx, screenName: `Screen ${idx}`, ts: new Date().toISOString() });
+    // Only bump a screenshot count on an entry that's actually this requester's
+    // own, in their own org — entryId was previously trusted as-is, letting any
+    // authenticated caller (including an employee's agent token) tamper with
+    // another organization's entry counters via a guessed/leaked id.
+    if (entryId) {
+      const entry = db.findEntryById(entryId);
+      if (entry && entry.organizationId === req.user.organizationId && entry.userId === req.user.id) {
+        db.bumpScreenshotCount(entryId);
+      }
+    }
     res.json({ filename });
   } catch (e) {
     res.status(500).json({ error: 'Failed to save screenshot' });
@@ -993,6 +1055,17 @@ app.get('/api/screenshots/:filename', auth, (req, res) => {
   const filename = path.basename(req.params.filename);
   const record = db.raw.prepare('SELECT * FROM screenshots WHERE filename = ?').get(filename);
   if (!record || record.organizationId !== req.user.organizationId) return res.status(404).end();
+  // Org match alone wasn't enough — it let one manager fetch another manager's
+  // employees' screenshots (and an employee's own agent token fetch anyone's)
+  // just by knowing/guessing a filename. Apply the same visibility scoping
+  // used by GET /api/screenshots above.
+  if (req.user.role === 'manager') {
+    const ids = visibleEmployeeIds(db.listUsersByOrg(req.user.organizationId), req.user);
+    ids.add(req.user.id);
+    if (!ids.has(record.userId)) return res.status(404).end();
+  } else if (req.user.role !== 'partner' && record.userId !== req.user.id) {
+    return res.status(404).end();
+  }
   const fp = path.join(SHOTS_DIR, filename);
   if (!fs.existsSync(fp)) return res.status(404).end();
   res.sendFile(fp);
@@ -1024,11 +1097,11 @@ app.post('/api/activity', auth, (req, res) => {
   if (type === 'screenshot') {
     const { base64, screenIndex, screenName } = req.body;
     if (!base64) return res.status(400).json({ error: 'No image data' });
-    const safeScreen = `screen${screenIndex || 1}`;
-    const filename   = `${userId}_${Date.now()}_${safeScreen}.jpg`;
+    const idx      = safeScreenIndex(screenIndex);
+    const filename = `${userId}_${Date.now()}_screen${idx}.jpg`;
     try {
       fs.writeFileSync(path.join(SHOTS_DIR, filename), Buffer.from(base64, 'base64'));
-      db.insertScreenshotRecord({ filename, organizationId, userId, userName, screenIndex: screenIndex || 1, screenName: screenName || `Screen ${screenIndex || 1}`, ts: now });
+      db.insertScreenshotRecord({ filename, organizationId, userId, userName, screenIndex: idx, screenName: screenName || `Screen ${idx}`, ts: now });
       return res.json({ ok: true, filename });
     } catch (e) {
       return res.status(500).json({ error: 'Failed to save screenshot' });
@@ -1151,7 +1224,12 @@ app.get('/api/activity/screenshots', auth, managerOrAbove, (req, res) => {
 // range + visibility scoping as the on-screen views above, just rendered to a file.
 function csvEscape(v) {
   if (v === null || v === undefined) return '';
-  const s = String(v);
+  let s = String(v);
+  // Neutralize formula injection: a value starting with =, +, -, or @ is
+  // interpreted as a live formula by Excel/Sheets when the CSV is opened,
+  // and project/task names are free text any employee can set. Prefixing
+  // with an apostrophe forces it to be read as plain text.
+  if (/^[=+\-@]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
