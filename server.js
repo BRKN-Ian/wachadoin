@@ -89,20 +89,14 @@ const SUGGESTED_RULES = [
   // 'sensitive' rules never affect the work/redflag productivity flag (see
   // classify(), which only matches work/redflag rows) — they exist purely to
   // tell the desktop Agent which apps/sites should never be screenshotted.
-  // Starter list covers the SA tax/accounting software this product's actual
-  // client base runs; each firm can add or remove entries from their own list.
-  { pattern: 'sars efiling',     category: 'sensitive' },
-  { pattern: 'easyfile',         category: 'sensitive' },
-  { pattern: 'pastel',           category: 'sensitive' },
-  { pattern: 'sage evolution',   category: 'sensitive' },
-  { pattern: 'sage one',         category: 'sensitive' },
-  { pattern: 'sage accounting',  category: 'sensitive' },
-  { pattern: 'xero',             category: 'sensitive' },
-  { pattern: 'draftworx',        category: 'sensitive' },
-  { pattern: 'caseware',         category: 'sensitive' },
-  { pattern: 'greatsoft',        category: 'sensitive' },
-  { pattern: 'taxplanner',       category: 'sensitive' },
-  { pattern: 'simplepay',        category: 'sensitive' },
+  // Deliberately NOT seeded with the firm's own accounting/tax software
+  // (Pastel, Xero, SARS eFiling, etc.) — for an accounting firm monitoring
+  // its own staff, screenshots of *those* systems are the whole point (it's
+  // how you'd catch someone doing unauthorized side-work on client software
+  // during paid hours). This category is for things genuinely outside the
+  // engagement — personal banking, personal email/medical portals — that a
+  // firm may still want to exclude if an employee happens to have them open.
+  // Left empty by default; each firm adds their own if they want any at all.
 ];
 
 function ensureRules(orgId) {
