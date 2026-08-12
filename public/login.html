@@ -667,6 +667,17 @@ tr:hover td { background: rgba(0,194,196,.05); }
       <div id="alertSettingsOk" style="display:none;margin-top:10px;color:var(--green);font-size:13px">Saved.</div>
     </div>
 
+    <!-- Billing (partner sets up/updates payment; manager can view) -->
+    <div class="page" id="pgBilling">
+      <div class="page-header"><div><div class="page-title">Billing</div><div class="page-sub">Your plan, current cost, and payment method</div></div></div>
+      <div class="card" style="max-width:520px">
+        <div id="billingSummary" style="margin-bottom:16px"></div>
+        <div id="billingErr" class="err-box"></div>
+        <button class="btn btn-primary" id="billingActionBtn" onclick="startBillingCheckout()" style="display:none"></button>
+        <p style="font-size:12px;color:var(--dim);margin-top:14px;line-height:1.5">Charged per active employee, per your billing cycle. Adding or removing staff mid-cycle takes effect next cycle — no pro-rata adjustment.</p>
+      </div>
+    </div>
+
     <!-- Admin (manager/partner) -->
     <div class="page" id="pgAdmin">
       <div class="page-header"><div><div class="page-title">Team Members</div><div class="page-sub">Add and manage employees — and, for partners/directors, managers too</div></div></div>
@@ -1137,6 +1148,7 @@ const DASH_NAV = [
   { id:'pgShots',    icon:'📷', label:'Screenshots',        tip:'Browse captured screenshots by date range and employee.' },
   { id:'pgRules',    icon:'🚩', label:'Monitoring Rules',   tip:'Decide which apps/sites count as work vs a red flag.' },
   { id:'pgAlerts',   icon:'🔔', label:'Alert Settings',     tip:'Choose when YOU get emailed about idle time, offline staff, or red-flag sites.' },
+  { id:'pgBilling',  icon:'💳', label:'Billing',            tip:'Your plan, current cost, and payment method.' },
   { id:'pgAdmin',    icon:'👥', label:'Team Members',       tip:'Add employees and managers, get Agent Keys, deactivate leavers.' },
   { id:'pgHelp',     icon:'❓', label:'Help & Guide',       tip:'Plain-language guide to every page, onboarding, and offboarding.' },
 ];
@@ -1156,6 +1168,7 @@ function showPage(id) {
   if (id === 'pgAdmin') loadUserList();
   if (id === 'pgRules') loadRules();
   if (id === 'pgAlerts') loadAlertSettings();
+  if (id === 'pgBilling') loadBilling();
 }
 
 // ── Date-range bars (day / week / month / custom) ──────────────────────────────
@@ -1216,12 +1229,13 @@ function initApp() {
   badge.className   = 'role-badge ' + (me.role === 'partner' ? 'partner' : 'manager');
   document.getElementById('addManagerCard').style.display = me.role === 'partner' ? 'block' : 'none';
 
-  buildNav(DASH_NAV);
+  buildNav(DASH_NAV.filter(n => n.id !== 'pgBilling' || me.role === 'partner'));
   showPage('pgStatus');
   loadStatus();
   statusTimer = setInterval(loadStatus, 15000);
   maybeShowPopiaNotice();
   maybeShowSubscriptionNotice();
+  maybeShowBillingReturnNotice();
 
   api('/api/users').then(users => {
     const sel = document.getElementById('shotsEmpFilter');
@@ -1741,6 +1755,9 @@ function maybeShowSubscriptionNotice() {
   const fmt = iso => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   const now = new Date();
   let cls = 'info', html = '';
+  // Partners get a direct link to the Billing page; managers can't act on
+  // billing (server-enforced too), so they just see the plain notice.
+  const billingLink = me.role === 'partner' ? ` <button class="btn btn-sm" onclick="showPage('pgBilling')" style="margin-left:8px">Go to Billing</button>` : '';
 
   if (myOrg.status === 'canceled' && myOrg.accessUntil) {
     const until = new Date(myOrg.accessUntil);
@@ -1751,15 +1768,24 @@ function maybeShowSubscriptionNotice() {
       cls  = 'danger';
       html = `<span><b>Subscription ended ${fmt(myOrg.accessUntil)}.</b> Contact Acute to reactivate.</span>`;
     }
+  } else if (myOrg.status === 'past_due') {
+    cls  = 'danger';
+    html = `<span><b>Payment failed — access is suspended.</b> Update your payment method to restore access.${billingLink}</span>`;
   } else if (myOrg.status === 'trialing' && myOrg.trialEndsAt) {
     const ends = new Date(myOrg.trialEndsAt);
     if (ends > now) {
       const daysLeft = Math.ceil((ends - now) / 86400000);
       cls  = 'info';
-      html = `<span>Free trial — <b>${daysLeft} day${daysLeft === 1 ? '' : 's'} left</b> (ends ${fmt(myOrg.trialEndsAt)}).</span>`;
+      html = `<span>Free trial — <b>${daysLeft} day${daysLeft === 1 ? '' : 's'} left</b> (ends ${fmt(myOrg.trialEndsAt)}).${myOrg.hasPaymentMethod ? '' : billingLink}</span>`;
+    } else if (myOrg.hasPaymentMethod) {
+      // Trial's over but a payment method is already on file — the next
+      // daily billing sweep will pick this org up and flip it to active
+      // (or past_due, if the first real charge fails). Not blocked either way.
+      cls  = 'info';
+      html = `<span>Your free trial ended ${fmt(myOrg.trialEndsAt)} — your first charge will go through shortly.</span>`;
     } else {
-      cls  = 'warn';
-      html = `<span><b>Your free trial ended ${fmt(myOrg.trialEndsAt)}.</b> Contact Acute to pick a plan and keep full access.</span>`;
+      cls  = 'danger';
+      html = `<span><b>Your free trial ended ${fmt(myOrg.trialEndsAt)}.</b> Set up billing to keep access.${billingLink}</span>`;
     }
   }
 
@@ -1767,6 +1793,80 @@ function maybeShowSubscriptionNotice() {
   banner.className = 'org-banner ' + cls;
   banner.innerHTML  = html;
   banner.style.display = 'flex';
+}
+
+// ── Billing (PayFast) ───────────────────────────────────────────────────────
+// Handles the redirect back from PayFast's hosted checkout (return_url/
+// cancel_url both point at "/?billing=success" or "/?billing=cancelled") —
+// shows a toast, then strips the query param so a refresh doesn't re-show it.
+function maybeShowBillingReturnNotice() {
+  const params = new URLSearchParams(location.search);
+  const billing = params.get('billing');
+  if (!billing) return;
+  if (billing === 'success') alert('Thanks — your payment method is set up. It may take a moment for the dashboard to reflect the new status.');
+  else if (billing === 'cancelled') alert('Checkout was cancelled — no payment method was set up.');
+  params.delete('billing');
+  const qs = params.toString();
+  history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
+}
+
+async function loadBilling() {
+  const err = document.getElementById('billingErr');
+  err.style.display = 'none';
+  try {
+    const b = await api('/api/billing/status');
+    if (b.error) { err.textContent = b.error; err.style.display = 'block'; return; }
+    renderBilling(b);
+  } catch (e) {
+    err.textContent = 'Could not load billing info.';
+    err.style.display = 'block';
+  }
+}
+
+function renderBilling(b) {
+  const fmt = iso => iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+  document.getElementById('billingSummary').innerHTML = `
+    <div class="key-row"><span>Plan</span><b>${escapeHtml(b.plan)} (${b.billingCycle === 'annual' ? 'annual, 10% off' : 'monthly'})</b></div>
+    <div class="key-row"><span>Price per employee</span><b>R${b.pricePerSeat}/mo</b></div>
+    <div class="key-row"><span>Active employees</span><b>${b.employeeCount}</b></div>
+    <div class="key-row"><span>This period's cost</span><b>R${Number(b.currentPeriodAmount).toFixed(2)}</b></div>
+    <div class="key-row"><span>Payment method</span><b>${b.hasPaymentMethod ? 'On file' : 'Not set up'}</b></div>
+    ${b.nextBillingAt ? `<div class="key-row"><span>Next charge</span><b>${fmt(b.nextBillingAt)}</b></div>` : ''}
+    ${b.lastChargeError ? `<div class="key-row" style="color:var(--red)"><span>Last charge</span><b>Failed — ${escapeHtml(b.lastChargeError)}</b></div>` : ''}
+  `;
+  const btn = document.getElementById('billingActionBtn');
+  const err = document.getElementById('billingErr');
+  err.style.display = 'none'; err.textContent = '';
+  if (me.role !== 'partner') { btn.style.display = 'none'; return; }
+  btn.style.display = 'inline-block';
+  btn.textContent = b.hasPaymentMethod ? 'Update payment method' : 'Set up billing';
+}
+
+async function startBillingCheckout() {
+  const btn = document.getElementById('billingActionBtn');
+  const err = document.getElementById('billingErr');
+  err.style.display = 'none';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/billing/checkout', { method: 'POST', headers: { Authorization: `Bearer ${token}` } }).then(r => r.json());
+    if (r.error) { err.textContent = r.error; err.style.display = 'block'; btn.disabled = false; return; }
+    // Auto-submit a hidden form to PayFast's hosted checkout — this is a
+    // real page navigation (not fetch/XHR), since PayFast's redirect flow
+    // expects a browser-submitted form POST.
+    const form = document.createElement('form');
+    form.method = 'POST'; form.action = r.actionUrl; form.style.display = 'none';
+    Object.entries(r.fields).forEach(([k, v]) => {
+      const input = document.createElement('input');
+      input.type = 'hidden'; input.name = k; input.value = v;
+      form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+  } catch (e) {
+    err.textContent = 'Could not start checkout — please try again.';
+    err.style.display = 'block';
+    btn.disabled = false;
+  }
 }
 
 // ── Monitoring/privacy onboarding notice (managers & partners) ────────────────
@@ -1935,9 +2035,16 @@ function orgStatusNote(o) {
     const past = new Date(o.accessUntil) <= new Date();
     return `<div class="org-note${past ? ' warn' : ''}">${past ? 'Access ended' : 'Access until'} ${fmt(o.accessUntil)}</div>`;
   }
+  if (o.status === 'past_due') {
+    return `<div class="org-note warn" title="${escapeHtml(o.lastChargeError || '')}">Payment failed — access cut off</div>`;
+  }
   if (o.status === 'trialing' && o.trialEndsAt) {
     const past = new Date(o.trialEndsAt) <= new Date();
-    return `<div class="org-note${past ? ' warn' : ''}">${past ? 'Trial ended' : 'Trial ends'} ${fmt(o.trialEndsAt)}</div>`;
+    const label = past ? (o.hasPaymentMethod ? 'Trial ended' : 'Trial ended — no payment method, access blocked') : 'Trial ends';
+    return `<div class="org-note${past && !o.hasPaymentMethod ? ' warn' : ''}">${label} ${fmt(o.trialEndsAt)}</div>`;
+  }
+  if (o.status === 'active' && o.nextBillingAt) {
+    return `<div class="org-note">Next charge ${fmt(o.nextBillingAt)}${o.hasPaymentMethod ? '' : ' (no payment method on file)'}</div>`;
   }
   return '';
 }
