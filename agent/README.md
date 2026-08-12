@@ -9,7 +9,11 @@ page in the dashboard) instead of a normal user login.
 
 ## What it does
 
-- **Screenshots** — every 10 minutes, of every connected screen.
+- **Screenshots** — every 10 minutes, of every connected screen — *unless*
+  the focused app/window matches one of the org's "sensitive apps" rules
+  (Monitoring Rules page → "Sensitive apps — no screenshots"), in which case
+  the whole tick is skipped and no image is ever generated. See
+  [Screenshot exclusions](#screenshot-exclusions-sensitive-apps) below.
 - **Active window** — every 30 seconds, the app name + window title of
   whatever's focused. For a browser this is usually the page/site title
   (e.g. "Xero – Dashboard — Google Chrome"), which is what powers the
@@ -21,6 +25,27 @@ page in the dashboard) instead of a normal user login.
 All three post to the same `/api/activity` endpoint the dashboard already
 uses; nothing on the server side changed except adding the Agent Key
 authentication path.
+
+## Screenshot exclusions (sensitive apps)
+
+Before every screenshot tick, the Agent checks the currently-focused app name
++ window title against the org's list of "sensitive" patterns (managed on the
+dashboard's Monitoring Rules page, fetched from `GET /api/agent/config` and
+cached for up to 30 minutes). If it matches, that tick is skipped entirely —
+no image is captured, and the Agent instead reports a lightweight
+`screenshot_skipped` event so the gallery shows a clear placeholder instead of
+just a gap.
+
+This means a firm can add or remove sensitive apps at any time from the
+dashboard with **no Agent update required** — only the matching mechanism
+itself needed a new Agent build to exist. That build is v1.1.0+; anyone still
+running an older Agent won't get this protection until they reinstall (there's
+no auto-updater — see "Building the installers" below).
+
+If the Agent can't reach the server (offline, first boot before any
+successful sync), it fails open and behaves exactly as it did before this
+feature existed for that tick, rather than blocking screenshots on a
+config fetch that hasn't succeeded yet.
 
 ## One-time setup (per employee machine)
 
@@ -86,5 +111,9 @@ The build config produces **unsigned** installers. That means:
   module, specifically so it doesn't need per-Electron-version native
   rebuilding — a common source of breakage that's hard to debug without a
   physical machine of each OS to test on.
+- `screenshotPolicy.js` — the sensitive-app matching + config-fetch logic
+  behind [Screenshot exclusions](#screenshot-exclusions-sensitive-apps).
+  Deliberately dependency-free (no `require('electron')`) so it can be
+  unit-tested with plain Node.
 - `setup.html` / `preload.js` — the one-time setup window.
 - `build/` — app icons (generated from your logo) for the installers and tray.

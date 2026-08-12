@@ -1,6 +1,6 @@
 {
   "name": "wachadoin-agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Wachadoin background monitoring agent — runs quietly on an employee's Windows or Mac computer and reports activity to your Wachadoin dashboard.",
   "main": "main.js",
   "author": "Acute Accountants Inc",
@@ -30,6 +30,7 @@
     "files": [
       "main.js",
       "activeWindow.js",
+      "screenshotPolicy.js",
       "setup.html",
       "preload.js",
       "package.json"

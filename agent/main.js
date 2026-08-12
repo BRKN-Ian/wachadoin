@@ -107,6 +107,20 @@ function startMonitoring() {
 
   screenshotTimer = setInterval(async () => {
     try {
+      // Check what's focused *right now*, at the moment we're about to
+      // capture — not the activeWinTimer's last poll (up to 30s stale) — and
+      // skip the whole tick (every display) if it matches a 'sensitive' rule
+      // for this org. No image is ever generated in that case; we just tell
+      // the server a screenshot was intentionally skipped and why.
+      const getActiveWindow = require('./activeWindow');
+      const { fetchSensitivePatterns, matchesSensitivePattern } = require('./screenshotPolicy');
+      const win = await getActiveWindow().catch(() => null);
+      const patterns = await fetchSensitivePatterns(config.serverUrl, config.agentToken);
+      if (win && matchesSensitivePattern(patterns, win.appName, win.title)) {
+        postActivity({ type: 'screenshot_skipped', appName: win.appName, title: win.title });
+        return;
+      }
+
       const screenshot = require('screenshot-desktop');
       const displays = await screenshot.listDisplays();
       for (let i = 0; i < displays.length; i++) {
