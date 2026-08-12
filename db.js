@@ -196,23 +196,40 @@ function open(dataDir) {
   ensureColumn('users', 'alertDigestDay', 'INTEGER');   // 0=Sun..6=Sat, SAST
   ensureColumn('users', 'alertDigestHour', 'INTEGER');  // 0-23, SAST
   ensureColumn('users', 'alertLastDigestSentAt', 'TEXT');
+  // Phase 2 billing (PayFast). payfastToken is the subscription token PayFast
+  // hands back once a firm completes checkout — used for every later adhoc()
+  // charge. lastBilledAt/nextBillingAt drive the daily processDueBilling()
+  // sweep in server.js. lastChargeError is the human-readable reason for the
+  // most recent failed charge (null when the last charge succeeded), shown to
+  // both the firm and superadmin. All null until a firm actually pays.
+  ensureColumn('organizations', 'payfastToken', 'TEXT');
+  ensureColumn('organizations', 'lastBilledAt', 'TEXT');
+  ensureColumn('organizations', 'nextBillingAt', 'TEXT');
+  ensureColumn('organizations', 'lastChargeError', 'TEXT');
 
   // ── Organizations ────────────────────────────────────────────────────────
   const stmtInsertOrg = db.prepare(`INSERT INTO organizations
-    (id, name, plan, seatLimit, permanentScreenshots, status, billingCycle, trialEndsAt, cancelRequestedAt, accessUntil, createdAt)
-    VALUES (@id, @name, @plan, @seatLimit, @permanentScreenshots, @status, @billingCycle, @trialEndsAt, @cancelRequestedAt, @accessUntil, @createdAt)`);
+    (id, name, plan, seatLimit, permanentScreenshots, status, billingCycle, trialEndsAt, cancelRequestedAt, accessUntil,
+     payfastToken, lastBilledAt, nextBillingAt, lastChargeError, createdAt)
+    VALUES (@id, @name, @plan, @seatLimit, @permanentScreenshots, @status, @billingCycle, @trialEndsAt, @cancelRequestedAt, @accessUntil,
+     @payfastToken, @lastBilledAt, @nextBillingAt, @lastChargeError, @createdAt)`);
   const stmtGetOrg = db.prepare(`SELECT * FROM organizations WHERE id = ?`);
   const stmtListOrgs = db.prepare(`SELECT * FROM organizations ORDER BY createdAt ASC`);
   const stmtUpdateOrg = db.prepare(`UPDATE organizations SET
     name=@name, plan=@plan, seatLimit=@seatLimit, permanentScreenshots=@permanentScreenshots, status=@status, billingCycle=@billingCycle,
-    trialEndsAt=@trialEndsAt, cancelRequestedAt=@cancelRequestedAt, accessUntil=@accessUntil
+    trialEndsAt=@trialEndsAt, cancelRequestedAt=@cancelRequestedAt, accessUntil=@accessUntil,
+    payfastToken=@payfastToken, lastBilledAt=@lastBilledAt, nextBillingAt=@nextBillingAt, lastChargeError=@lastChargeError
     WHERE id=@id`);
+  const stmtOrgsDueForBilling = db.prepare(
+    `SELECT * FROM organizations WHERE status = 'active' AND payfastToken IS NOT NULL AND nextBillingAt <= ?`);
 
   function rowToOrg(r) {
     if (!r) return null;
     return {
       ...r, permanentScreenshots: !!r.permanentScreenshots, billingCycle: r.billingCycle || 'monthly',
       trialEndsAt: r.trialEndsAt || null, cancelRequestedAt: r.cancelRequestedAt || null, accessUntil: r.accessUntil || null,
+      payfastToken: r.payfastToken || null, lastBilledAt: r.lastBilledAt || null,
+      nextBillingAt: r.nextBillingAt || null, lastChargeError: r.lastChargeError || null,
     };
   }
 
@@ -222,6 +239,7 @@ function open(dataDir) {
       seatLimit: seatLimit ?? null, permanentScreenshots: permanentScreenshots ? 1 : 0,
       status: status || 'trialing', billingCycle: billingCycle === 'annual' ? 'annual' : 'monthly',
       trialEndsAt: trialEndsAt || null, cancelRequestedAt: null, accessUntil: null,
+      payfastToken: null, lastBilledAt: null, nextBillingAt: null, lastChargeError: null,
       createdAt: new Date().toISOString(),
     };
     stmtInsertOrg.run(row);
@@ -233,9 +251,17 @@ function open(dataDir) {
     stmtUpdateOrg.run({
       ...org, permanentScreenshots: org.permanentScreenshots ? 1 : 0, billingCycle: org.billingCycle === 'annual' ? 'annual' : 'monthly',
       trialEndsAt: org.trialEndsAt || null, cancelRequestedAt: org.cancelRequestedAt || null, accessUntil: org.accessUntil || null,
+      payfastToken: org.payfastToken || null, lastBilledAt: org.lastBilledAt || null,
+      nextBillingAt: org.nextBillingAt || null, lastChargeError: org.lastChargeError || null,
     });
     return getOrg(org.id);
   }
+  // Orgs whose next scheduled charge is due. Seat counts are deliberately not
+  // stored anywhere — server.js re-counts via countActiveEmployees() at the
+  // moment of each charge, so a firm that adds/removes staff mid-cycle is
+  // billed correctly next cycle (no proration, same as the existing
+  // "no pro-rata refund" cancellation policy).
+  function listOrgsDueForBilling(nowIso) { return stmtOrgsDueForBilling.all(nowIso).map(rowToOrg); }
 
   // ── Users ────────────────────────────────────────────────────────────────
   const stmtInsertUser = db.prepare(`INSERT INTO users
@@ -460,7 +486,7 @@ function open(dataDir) {
 
   return {
     raw: db,
-    createOrg, getOrg, listOrgs, updateOrg,
+    createOrg, getOrg, listOrgs, updateOrg, listOrgsDueForBilling,
     insertUser, findUserById, findUserByEmail, findUserByAgentToken, findUserByResetToken, listUsersByOrg, listAllUsers, updateUser, deleteUser, countActiveEmployees,
     insertEntry, updateEntry, deleteEntry, findEntryById, findRunningEntries, listEntriesByOrg, bumpScreenshotCount,
     insertHeartbeat, listHeartbeatsByOrgRange, latestHeartbeatsByOrg, pruneHeartbeats,

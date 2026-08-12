@@ -11,6 +11,7 @@ const dbLib    = require('./db');
 const { issueToken, hashToken, verifyToken, rateLimited } = require('./lib/tokens');
 const { ALERT_DEFAULTS, resolveAlertSettings, weekendAdjustedElapsedMs, isDigestDueNow } = require('./lib/alerts');
 const mailer   = require('./lib/mailer');
+const payfast  = require('./lib/payments/payfast');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -217,23 +218,37 @@ function computeAccessUntil(org, fromDate) {
   return new Date(periodEnd).toISOString();
 }
 
-// True once a canceled org's paid-through date has actually passed — this is
-// the one place cancellation turns into a real access cutoff (see auth() and
-// the login route below).
+// True once access should actually be blocked. Three independent cases:
+//  - Voluntary cancellation: no pro-rata refund, so access continues to the
+//    end of the paid term (accessUntil) — this is the original, unchanged
+//    behavior.
+//  - A PayFast charge failed (status='past_due'): Ian's explicit call is
+//    immediate cutoff, no grace period — no date check needed.
+//  - A free trial ran out and the firm never completed checkout at all (no
+//    payfastToken on file): same immediate-cutoff policy, now that there's an
+//    actual gateway to pay through. A trialing org that HAS set up billing
+//    isn't affected by this — it'll flip to 'active' via the ITN handler
+//    before or at trialEndsAt in the normal case, and if the first charge
+//    itself fails, the 'past_due' branch above already covers it.
 function orgAccessExpired(org) {
-  return !!(org && org.status === 'canceled' && org.accessUntil && new Date(org.accessUntil) <= new Date());
+  if (!org) return false;
+  if (org.status === 'canceled') return !!(org.accessUntil && new Date(org.accessUntil) <= new Date());
+  if (org.status === 'past_due') return true;
+  if (org.status === 'trialing' && org.trialEndsAt && new Date(org.trialEndsAt) <= new Date() && !org.payfastToken) return true;
+  return false;
 }
 
 // The subset of org fields the dashboard (not the superadmin console, which
-// gets the full picture from /api/admin/orgs) needs to show trial/cancellation
-// banners. Returns null for the platform org itself (superadmin has no
-// "subscription" of its own).
+// gets the full picture from /api/admin/orgs) needs to show trial/cancellation/
+// billing banners. Returns null for the platform org itself (superadmin has
+// no "subscription" of its own).
 function orgSummaryFor(organizationId) {
   const org = organizationId && db.getOrg(organizationId);
   if (!org || org.id === PLATFORM_ORG_ID) return null;
   return {
     id: org.id, status: org.status, billingCycle: org.billingCycle,
     trialEndsAt: org.trialEndsAt, cancelRequestedAt: org.cancelRequestedAt, accessUntil: org.accessUntil,
+    hasPaymentMethod: !!org.payfastToken, lastChargeError: org.lastChargeError,
   };
 }
 
@@ -348,9 +363,45 @@ function sweepOrphanedScreenshotFiles() {
     }
   } catch {}
 }
+// ── Billing sweep (PayFast) ─────────────────────────────────────────────────
+// Deliberately does NOT rely on PayFast's own native recurring-amount
+// schedule — the amount is recalculated fresh from the CURRENT employee count
+// every time, via chargeAdhoc() against the token established at checkout, so
+// a firm that adds/removes staff mid-cycle just pays the new count starting
+// next cycle (no proration, matching the existing "no pro-rata refund" copy).
+async function processDueBilling() {
+  const now = new Date();
+  for (const org of db.listOrgsDueForBilling(now.toISOString())) {
+    const employeeCount = db.countActiveEmployees(org.id);
+    const amount = payfast.computeSeatAmount(org.plan, org.billingCycle, employeeCount);
+    const result = await payfast.chargeAdhoc(org.payfastToken, amount, `Wachadoin — ${org.plan} plan (${employeeCount} seats)`);
+    const periodMs = (org.billingCycle === 'annual' ? 365 : 30) * 24 * 60 * 60 * 1000;
+    if (result.ok) {
+      db.updateOrg({ ...org, status: 'active', lastBilledAt: now.toISOString(), nextBillingAt: new Date(now.getTime() + periodMs).toISOString(), lastChargeError: null });
+      console.log(`[billing] Charged org ${org.id} R${amount.toFixed(2)} for ${employeeCount} seats.`);
+    } else {
+      db.updateOrg({ ...org, status: 'past_due', lastChargeError: result.error });
+      console.error(`[billing] Charge FAILED for org ${org.id}: ${result.error} — access cut off immediately.`);
+      const partner = db.listUsersByOrg(org.id).find(u => u.role === 'partner');
+      if (partner) {
+        mailer.sendMail({
+          to: partner.email,
+          subject: 'Wachadoin — payment failed, access suspended',
+          html: `<p>Hi ${partner.name},</p><p>Your latest Wachadoin charge (R${amount.toFixed(2)}) didn't go through, so access has been suspended for your organization. Please log in and update your payment method on the Billing page to restore access.</p>`,
+        }).catch(() => {});
+      }
+    }
+  }
+}
+
 sweepRetention();
 sweepOrphanedScreenshotFiles();
-setInterval(() => { sweepRetention(); sweepOrphanedScreenshotFiles(); }, 24 * 60 * 60 * 1000);
+processDueBilling().catch(err => console.error('[billing] sweep failed:', err.message));
+setInterval(() => {
+  sweepRetention();
+  sweepOrphanedScreenshotFiles();
+  processDueBilling().catch(err => console.error('[billing] sweep failed:', err.message));
+}, 24 * 60 * 60 * 1000);
 
 // No hardcoded fallback: a shipped-in-source secret would let anyone who's
 // read the code forge a valid login for any user, including superadmin.
@@ -380,6 +431,16 @@ app.get('/signup', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
+// The three orgAccessExpired() cases each need different advice: a payment
+// failure is the org's own to fix (update payment method), a lapsed trial
+// needs billing set up for the first time, and an actual voluntary
+// cancellation past its paid term genuinely does need Acute to reactivate it.
+function accessBlockedMessage(org) {
+  if (org.status === 'past_due') return "This organization's last payment failed. Update your payment method on the Billing page to restore access.";
+  if (org.status === 'trialing') return "This organization's free trial has ended. Set up billing on the Billing page to keep access.";
+  return "This organization's subscription has ended. Contact Acute to reactivate.";
+}
+
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace('Bearer ', '').trim();
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
@@ -388,8 +449,9 @@ function auth(req, res, next) {
     const user = db.findUserByAgentToken(token);
     if (!user) return res.status(401).json({ error: 'Invalid agent token' });
     if (user.active === false) return res.status(401).json({ error: 'Account deactivated' });
-    if (orgAccessExpired(db.getOrg(user.organizationId)))
-      return res.status(403).json({ error: "This organization's subscription has ended." });
+    const org1 = db.getOrg(user.organizationId);
+    if (orgAccessExpired(org1))
+      return res.status(403).json({ error: accessBlockedMessage(org1) });
     req.user = { id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId, viaAgent: true };
     return next();
   }
@@ -406,8 +468,9 @@ function auth(req, res, next) {
   // Cancellation isn't pro-rata — an org keeps access through the end of its current
   // paid term (see computeAccessUntil above) and only actually gets cut off once that
   // date passes. Superadmin's own org is never 'canceled', so this never affects it.
-  if (orgAccessExpired(db.getOrg(u.organizationId)))
-    return res.status(403).json({ error: "This organization's subscription has ended. Contact Acute to reactivate." });
+  const org2 = db.getOrg(u.organizationId);
+  if (orgAccessExpired(org2))
+    return res.status(403).json({ error: accessBlockedMessage(org2) });
   // Always trust the freshly-loaded organizationId/role over the (possibly days-old) JWT
   // payload, defensively — there's no role-change endpoint today, but this costs nothing.
   req.user = { id: u.id, name: u.name, email: u.email, role: u.role, organizationId: u.organizationId };
@@ -725,7 +788,7 @@ app.post('/api/auth/signup', async (req, res) => {
   const partner = db.insertUser({ organizationId: org.id, name: name.trim(), email: email.toLowerCase().trim(), passwordHash, role: 'partner' });
 
   const token = jwt.sign({ id: partner.id, name: partner.name, email: partner.email, role: partner.role, organizationId: org.id }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { id: org.id, name: org.name, plan: org.plan, status: org.status, billingCycle: org.billingCycle, trialEndsAt: org.trialEndsAt } });
+  res.json({ token, user: { id: partner.id, name: partner.name, email: partner.email, role: partner.role }, organization: { ...orgSummaryFor(org.id), name: org.name, plan: org.plan } });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -747,8 +810,10 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(403).json({ error: 'This account has been deactivated. Contact your manager.' });
   // Same no-pro-rata cutoff as auth() below, checked here too so a cut-off org gets a
   // clear message at login instead of a token that then 403s on its first real request.
-  if (user.role !== 'superadmin' && orgAccessExpired(db.getOrg(user.organizationId)))
-    return res.status(403).json({ error: "This organization's subscription has ended. Contact Acute to reactivate." });
+  if (user.role !== 'superadmin') {
+    const userOrg = db.getOrg(user.organizationId);
+    if (orgAccessExpired(userOrg)) return res.status(403).json({ error: accessBlockedMessage(userOrg) });
+  }
   const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, popiaAcknowledgedAt: user.popiaAcknowledgedAt || null }, organization: orgSummaryFor(user.organizationId) });
 });
@@ -1385,6 +1450,9 @@ app.get('/api/admin/orgs', auth, superAdminOnly, (req, res) => {
       trialEndsAt: o.trialEndsAt, cancelRequestedAt: o.cancelRequestedAt, accessUntil: o.accessUntil,
       managerCount: users.filter(u => u.role === 'manager' || u.role === 'partner').length,
       employeeCount: users.filter(u => u.role === 'employee' && u.active !== false).length,
+      // Payment-gateway visibility (never the raw token) — informational only;
+      // the manual plan/status/billingCycle override below stays as the escape hatch.
+      hasPaymentMethod: !!o.payfastToken, nextBillingAt: o.nextBillingAt, lastChargeError: o.lastChargeError,
     };
   }));
 });
@@ -1425,8 +1493,85 @@ app.patch('/api/admin/orgs/:id', auth, superAdminOnly, (req, res) => {
     billingCycle: nextBillingCycle,
     trialEndsAt: org.trialEndsAt,
     cancelRequestedAt, accessUntil,
+    // Carry the payment-gateway fields through untouched — updateOrg() does a
+    // full-row UPDATE, so omitting these would silently null them out here.
+    payfastToken: org.payfastToken, lastBilledAt: org.lastBilledAt,
+    nextBillingAt: org.nextBillingAt, lastChargeError: org.lastChargeError,
   });
   res.json(updated);
+});
+
+// ── Billing (PayFast) ───────────────────────────────────────────────────────
+// Checkout establishes a subscription TOKEN via PayFast's hosted redirect;
+// the actual recurring charge is driven entirely by our own daily sweep
+// (processDueBilling(), above) via chargeAdhoc() against that token — never
+// by PayFast's own native schedule — so the amount reflects the CURRENT
+// employee count every cycle. See lib/payments/payfast.js for why two
+// different signature algorithms are involved.
+app.post('/api/billing/checkout', auth, partnerOnly, async (req, res) => {
+  const org = db.getOrg(req.user.organizationId);
+  const employeeCount = db.countActiveEmployees(org.id);
+  const amount = payfast.computeSeatAmount(org.plan, org.billingCycle, employeeCount);
+  if (amount <= 0) return res.status(400).json({ error: 'Add at least one employee before setting up billing.' });
+  const base = `${req.protocol}://${req.get('host')}`;
+  const result = payfast.buildCheckoutFields(org, amount, {
+    returnUrl: `${base}/?billing=success`,
+    cancelUrl: `${base}/?billing=cancelled`,
+    notifyUrl: `${base}/api/billing/payfast-itn`,
+  });
+  if (!result.ok) return res.status(503).json({ error: result.error });
+  res.json({ actionUrl: result.actionUrl, fields: result.fields });
+});
+
+// Fully public — no `auth` middleware. Trust comes from PayFast's own
+// signature + server-confirmation callback (verified in payfast.verifyItn),
+// the same "trust by possession of a valid credential" shape as the
+// forgot-password/accept-invite endpoints above, except the credential here
+// is PayFast's, not ours. Needs the raw urlencoded body (not JSON) and the
+// exact raw bytes for the validate-callback, hence its own body parser here
+// instead of relying on the global express.json() middleware.
+app.post('/api/billing/payfast-itn', express.urlencoded({
+  extended: false,
+  verify: (req, buf) => { req.rawBody = buf.toString('utf8'); },
+}), async (req, res) => {
+  res.sendStatus(200); // acknowledge immediately — PayFast retries on non-200/timeout
+  try {
+    const org = db.getOrg(req.body.custom_str1);
+    if (!org) return console.error('[billing] ITN for unknown org:', req.body.custom_str1);
+    const passphrase = process.env.PAYFAST_PASSPHRASE || null;
+    const check = await payfast.verifyItn(req.rawBody, req.body, passphrase);
+    if (!check.valid) return console.error('[billing] ITN rejected:', check.reason, 'for org', org.id);
+
+    const status = (req.body.payment_status || '').toUpperCase();
+    if (status === 'COMPLETE') {
+      const periodMs = (org.billingCycle === 'annual' ? 365 : 30) * 24 * 60 * 60 * 1000;
+      db.updateOrg({
+        ...org, status: 'active',
+        payfastToken: req.body.token || org.payfastToken,
+        lastBilledAt: new Date().toISOString(),
+        nextBillingAt: new Date(Date.now() + periodMs).toISOString(),
+        lastChargeError: null,
+      });
+      console.log('[billing] Checkout completed for org', org.id);
+    } else {
+      db.updateOrg({ ...org, status: 'past_due', lastChargeError: `PayFast notification status: ${status || 'unknown'}` });
+      console.error('[billing] Checkout did not complete for org', org.id, '— status:', status);
+    }
+  } catch (err) {
+    console.error('[billing] ITN handling error:', err.message);
+  }
+});
+
+app.get('/api/billing/status', auth, managerOrAbove, (req, res) => {
+  const org = db.getOrg(req.user.organizationId);
+  const employeeCount = db.countActiveEmployees(org.id);
+  const amount = payfast.computeSeatAmount(org.plan, org.billingCycle, employeeCount);
+  res.json({
+    plan: org.plan, billingCycle: org.billingCycle, pricePerSeat: payfast.PLAN_PRICE[org.plan] ?? null,
+    employeeCount, currentPeriodAmount: amount, hasPaymentMethod: !!org.payfastToken,
+    lastBilledAt: org.lastBilledAt, nextBillingAt: org.nextBillingAt, lastChargeError: org.lastChargeError,
+    status: org.status,
+  });
 });
 
 // ── Start ──────────────────────────────────────────────────────
