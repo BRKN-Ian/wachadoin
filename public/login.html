@@ -860,6 +860,29 @@ let myOrg = null;
 let statusTimer = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+// Several dashboard views build HTML via innerHTML with values that originate
+// from other people's input — an employee's reported window/app title, an
+// org name typed at public signup, a monitoring-rule pattern a manager typed
+// — none of which was ever escaped. Route every such value through this
+// before it goes into a template string, so a payload like
+// <img src=x onerror=...> renders as inert text instead of executing.
+function escapeHtml(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+// For a value embedded inside onclick="fn('${...}')" — a value that has to
+// survive two layers: it's first parsed as an HTML attribute (so a stray "
+// would close the attribute early), then the decoded result is run as JS
+// (so a stray ' would close the string early). Escape the JS layer first,
+// then HTML-escape the whole thing — the browser decodes entities back to
+// real characters before handing the string to the JS engine, so this nests
+// correctly.
+function attrJs(v) {
+  const jsSafe = String(v ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return escapeHtml(jsSafe);
+}
+
 function api(path, opts) {
   return fetch(path, { headers: { Authorization: `Bearer ${token}` }, ...opts }).then(r => r.json());
 }
@@ -1205,7 +1228,7 @@ function initApp() {
     if (me.role === 'partner') {
       const mgrSel = document.getElementById('newEmpManager');
       mgrSel.innerHTML = users.filter(u => u.role === 'manager')
-        .map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+        .map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('');
       document.getElementById('newEmpManagerWrap').style.display = 'block';
     }
   });
@@ -1253,14 +1276,14 @@ function renderStatus(employees) {
     const score    = e.activityScore ?? 0;
     const barColor = scoreColor(e.activityScore);
     const appColor = e.flag === 'redflag' ? 'var(--red)' : e.flag === 'work' ? 'var(--green)' : 'var(--dim)';
-    const appLine  = e.activeApp ? `🖥 <span style="color:${appColor}">${e.activeApp}${e.activeTitle ? ' — ' + e.activeTitle.slice(0,50) : ''}</span>` : 'No app data';
+    const appLine  = e.activeApp ? `🖥 <span style="color:${appColor}">${escapeHtml(e.activeApp)}${e.activeTitle ? ' — ' + escapeHtml(e.activeTitle.slice(0,50)) : ''}</span>` : 'No app data';
     return `
     <div class="emp-card ${cls}">
       <div class="emp-header">
-        <div class="emp-avatar">${initials(e.userName)}</div>
+        <div class="emp-avatar">${escapeHtml(initials(e.userName))}</div>
         <div class="emp-info">
-          <div class="emp-name">${e.userName}</div>
-          <div class="emp-email">${e.email}</div>
+          <div class="emp-name">${escapeHtml(e.userName)}</div>
+          <div class="emp-email">${escapeHtml(e.email)}</div>
         </div>
         <div class="status-dot ${dotCls}"></div>
       </div>
@@ -1296,11 +1319,11 @@ async function loadAppUsage(from, to) {
     const rows = usage.filter(r => r.userId === emp.id).sort((a,b) => b.count - a.count).slice(0,10);
     if (!rows.length) return '';
     const max = rows[0].count;
-    return `<div class="app-usage-card"><h3>${emp.name}</h3>${rows.map(r => {
+    return `<div class="app-usage-card"><h3>${escapeHtml(emp.name)}</h3>${rows.map(r => {
       const barColor = r.category === 'redflag' ? 'var(--red)' : r.category === 'work' ? 'var(--green)' : 'var(--primary)';
       const flagIcon = r.category === 'redflag' ? '⚠ ' : '';
       return `<div class="app-row">
-         <div class="app-name" title="${r.appName}">${flagIcon}${r.appName}</div>
+         <div class="app-name" title="${escapeHtml(r.appName)}">${flagIcon}${escapeHtml(r.appName)}</div>
          <div class="app-bar" style="flex:1"><div class="app-bar-fill" style="width:${Math.round(r.count/max*100)}%;background:${barColor}"></div></div>
          <div class="app-count">${r.count}×</div>
        </div>`;
@@ -1400,7 +1423,7 @@ function renderTimelineSummary(employees, entries, usage) {
   }
   tbody.innerHTML = rows.map(r => `
     <tr>
-      <td>${r.emp.name}</td>
+      <td>${escapeHtml(r.emp.name)}</td>
       <td>${r.hours.toFixed(1)}h</td>
       <td><span style="color:${scoreColor(r.avg)};font-weight:700">${r.avg != null ? r.avg + '%' : '—'}</span></td>
       <td>${r.redflag ? `<span style="color:var(--red);font-weight:600">${r.redflag}</span>` : '0'}</td>
@@ -1429,7 +1452,7 @@ function renderHourGrid(employees, logs) {
       const cls  = l.isIdle ? 'seg-idle' : 'seg-active';
       return `<div class="tl-segment ${cls}" style="left:${pct.toFixed(2)}%;width:${w.toFixed(2)}%" title="${fmtTime(l.ts)} — ${l.isIdle ? 'Idle' : 'Active'} (${l.activityScore ?? 0}%)"></div>`;
     }).join('');
-    return `<div class="tl-row"><div class="tl-label" title="${emp.name}">${emp.name}</div><div class="tl-bar">${segs}</div></div>`;
+    return `<div class="tl-row"><div class="tl-label" title="${escapeHtml(emp.name)}">${escapeHtml(emp.name)}</div><div class="tl-bar">${segs}</div></div>`;
   }).join('');
 
   wrap.innerHTML = `
@@ -1464,15 +1487,15 @@ async function loadScreenshots(from, to) {
     return `
     <div class="shots-emp-section">
       <div class="shots-emp-header">
-        <div class="emp-avatar" style="width:30px;height:30px;font-size:13px">${initials(name)}</div>
-        <div class="shots-emp-name">${name}</div>
+        <div class="emp-avatar" style="width:30px;height:30px;font-size:13px">${escapeHtml(initials(name))}</div>
+        <div class="shots-emp-name">${escapeHtml(name)}</div>
         <span class="pill pill-gray" style="margin-left:auto">${empShots.length} shot${empShots.length!==1?'s':''}</span>
       </div>
       <div class="shots-grid">
         ${empShots.map(s => `
           <div class="shot-card" onclick="openLb('/api/screenshots/${s.filename}')">
             <img class="shot-img" src="/api/screenshots/${s.filename}" alt="" loading="lazy">
-            <div class="shot-meta"><span>${fmtTime(s.ts)}</span><span>${s.screenName||'Screen 1'}</span></div>
+            <div class="shot-meta"><span>${fmtTime(s.ts)}</span><span>${escapeHtml(s.screenName||'Screen 1')}</span></div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -1487,7 +1510,7 @@ function closeLb()   { document.getElementById('lightbox').classList.remove('ope
 // manager (who can be managed) plus every employee grouped under their manager, so
 // the org's whole structure is visible at a glance.
 function userRow(u, opts) {
-  const nameEsc = u.name.replace(/'/g, "\\'");
+  const nameEsc = attrJs(u.name);
   const inactive = u.active === false;
   const pending = u.inviteStatus === 'pending';
   let actions = '';
@@ -1509,7 +1532,7 @@ function userRow(u, opts) {
   } else {
     actions = inactive
       ? `<button class="btn btn-ghost btn-sm" title="Restores their login access. If a while has passed or the key was regenerated, get them a fresh Agent Key too." onclick="reactivateUser('${u.id}','${nameEsc}')">Reactivate</button>
-         <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Removes this person and ALL their historical time/activity records for good. Cannot be undone — Reactivate is almost always what you want instead." onclick="deleteUser('${u.id}','${u.name}')">Delete permanently</button>`
+         <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Removes this person and ALL their historical time/activity records for good. Cannot be undone — Reactivate is almost always what you want instead." onclick="deleteUser('${u.id}','${nameEsc}')">Delete permanently</button>`
       : `<button class="btn btn-ghost btn-sm" title="Get the download links, server URL, and personal setup key to install the agent on their computer." onclick="openAgentKeyModal('${u.id}','${nameEsc}')">Agent Key</button>
          <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red);margin-left:6px" title="Use this when someone leaves: blocks their access and stops the agent immediately, but keeps their past activity on file." onclick="deactivateUser('${u.id}','${nameEsc}')">Deactivate</button>`;
   }
@@ -1520,7 +1543,7 @@ function userRow(u, opts) {
   let consentCell = '';
   if (u.role !== 'partner') {
     const consentPill = u.consentRecordedAt
-      ? `<span class="pill pill-green" title="Recorded ${u.consentRecordedAt.slice(0,10)} by ${u.consentRecordedBy || 'unknown'}${u.consentNote ? ' — ' + u.consentNote.replace(/"/g,'&quot;') : ''}">Recorded ${u.consentRecordedAt.slice(0,10)}</span>`
+      ? `<span class="pill pill-green" title="Recorded ${u.consentRecordedAt.slice(0,10)} by ${escapeHtml(u.consentRecordedBy || 'unknown')}${u.consentNote ? ' — ' + escapeHtml(u.consentNote) : ''}">Recorded ${u.consentRecordedAt.slice(0,10)}</span>`
       : `<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="No record yet that this person was told about monitoring and consented outside the app.">Not yet recorded</span>`;
     const consentBtn = `<button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="openConsentModal('${u.id}','${nameEsc}')">${u.consentRecordedAt ? 'Update' : 'Record'}</button>`;
     consentCell = consentPill + consentBtn;
@@ -1530,8 +1553,8 @@ function userRow(u, opts) {
 
   return `
   <tr style="${inactive ? 'opacity:.55' : ''}">
-    <td>${u.name}</td>
-    <td style="color:var(--dim)">${u.email}</td>
+    <td>${escapeHtml(u.name)}</td>
+    <td style="color:var(--dim)">${escapeHtml(u.email)}</td>
     <td><span class="pill ${u.role === 'employee' ? 'pill-gray' : 'pill-green'}">${u.role === 'partner' ? 'partner/director' : u.role}</span></td>
     <td>${pending ? '<span class="pill" style="background:rgba(234,179,8,.18);color:#a16207" title="They haven\'t set a password yet — send them the invite link.">Invited — not yet activated</span>' : inactive ? '<span class="pill" style="background:rgba(239,68,68,.15);color:var(--red)" title="Access is blocked. Past activity is still kept.">Inactive</span>' : '<span class="pill pill-green" title="Active — can be tracked / can log in normally.">Active</span>'}</td>
     <td style="white-space:nowrap">${consentCell}</td>
@@ -1558,7 +1581,7 @@ async function loadUserList() {
     const managerSection = managers.map(mgr => {
       const team = employees.filter(e => e.managerId === mgr.id);
       const rows = userRow(mgr, { canManageManagers: true }) + team.map(e => userRow(e, {})).join('');
-      return `<div style="margin-bottom:18px"><h4 style="font-size:13px;color:var(--dim);margin-bottom:8px">Manager: ${mgr.name}${team.length ? ` — ${team.length} employee${team.length!==1?'s':''}` : ' — no employees yet'}</h4>${userTable(rows)}</div>`;
+      return `<div style="margin-bottom:18px"><h4 style="font-size:13px;color:var(--dim);margin-bottom:8px">Manager: ${escapeHtml(mgr.name)}${team.length ? ` — ${team.length} employee${team.length!==1?'s':''}` : ' — no employees yet'}</h4>${userTable(rows)}</div>`;
     }).join('') || `<div class="empty"><div class="ei">👥</div><p>No managers yet — add one above.</p></div>`;
     groupsEl.innerHTML = partnerSection + managerSection;
   } else {
@@ -1631,7 +1654,7 @@ async function loadRules() {
   renderRules();
 }
 function renderRules() {
-  const pill = r => `<div class="rule-pill">${r.pattern}<button title="Remove" onclick="removeRule('${r.id}')">✕</button></div>`;
+  const pill = r => `<div class="rule-pill">${escapeHtml(r.pattern)}<button title="Remove" onclick="removeRule('${r.id}')">✕</button></div>`;
   document.getElementById('workRulesList').innerHTML = `<div class="rule-list">${allRules.filter(r => r.category === 'work').map(pill).join('') || '<span style="color:var(--muted);font-size:12px">None yet</span>'}</div>`;
   document.getElementById('flagRulesList').innerHTML = `<div class="rule-list">${allRules.filter(r => r.category === 'redflag').map(pill).join('') || '<span style="color:var(--muted);font-size:12px">None yet</span>'}</div>`;
 }
@@ -1807,7 +1830,7 @@ async function createManager() {
   // Refresh the "Reports to" dropdown on the Add Employee form so a newly-added manager is selectable.
   api('/api/users').then(users => {
     const mgrSel = document.getElementById('newEmpManager');
-    mgrSel.innerHTML = users.filter(u => u.role === 'manager').map(u => `<option value="${u.id}">${u.name}</option>`).join('');
+    mgrSel.innerHTML = users.filter(u => u.role === 'manager').map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('');
   });
 }
 
@@ -1913,7 +1936,7 @@ function renderOrgs(orgs) {
   const billingOpts = Object.keys(BILLING_LABEL);
   document.getElementById('orgsBody').innerHTML = orgs.map(o => `
     <tr>
-      <td>${o.name}</td>
+      <td>${escapeHtml(o.name)}</td>
       <td><select onchange="patchOrg('${o.id}',{plan:this.value})">
         ${planOpts.map(p => `<option value="${p}" ${p===o.plan?'selected':''}>${PLAN_LABEL[p]}</option>`).join('')}
       </select></td>
