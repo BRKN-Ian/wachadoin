@@ -390,18 +390,11 @@ tr:hover td { background: rgba(0,194,196,.05); }
     </div>
     <div id="forgotPanel" style="display:none">
       <h2>Reset your password</h2>
-      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Enter the email on your account. Since automatic email delivery isn't connected yet, we'll show the reset link right here for you to use — it's only valid for 30 minutes.</p>
+      <p style="font-size:13px;color:var(--dim);margin-bottom:16px">Enter the email on your account and we'll email you a link to reset your password. The link is valid for 30 minutes.</p>
       <label>Email</label>
       <input id="forgotEmail" type="email" placeholder="you@yourfirm.com" autocomplete="username">
       <button class="btn btn-primary" id="btnForgot">Send reset link</button>
       <div class="err-box" id="forgotErr"></div>
-      <div id="forgotResult" style="display:none;margin-top:14px">
-        <label>Your reset link</label>
-        <div class="key-row">
-          <div class="key-field" id="forgotLink">—</div>
-          <button class="btn btn-ghost btn-sm" title="Copy to clipboard" onclick="copyField('forgotLink')">Copy</button>
-        </div>
-      </div>
       <p style="font-size:13px;color:var(--dim);margin-top:16px;text-align:center">
         <a href="#" id="showLoginFromForgot" style="color:var(--primary);text-decoration:none">Back to sign in</a>
       </p>
@@ -974,22 +967,18 @@ document.getElementById('btnForgot').addEventListener('click', async () => {
   const email = document.getElementById('forgotEmail').value.trim();
   const err   = document.getElementById('forgotErr');
   const btn   = document.getElementById('btnForgot');
-  err.style.display = 'none';
-  document.getElementById('forgotResult').style.display = 'none';
+  err.className = 'err-box'; err.style.display = 'none';
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
     const r = await fetch('/api/auth/forgot-password', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
     }).then(r => r.json());
     if (r.error) throw new Error(r.error);
-    if (r.resetLink) {
-      document.getElementById('forgotLink').textContent = r.resetLink;
-      document.getElementById('forgotResult').style.display = 'block';
-    } else {
-      err.textContent = "If that email has an account, we couldn't generate a link for it right now — check the address and try again.";
-      err.style.display = 'block';
-    }
+    err.className = 'ok-box';
+    err.textContent = "If that email has an account, we've emailed a reset link to it — check your inbox (and spam folder).";
+    err.style.display = 'block';
   } catch (e) {
+    err.className = 'err-box';
     err.textContent = e.message; err.style.display = 'block';
   } finally {
     btn.disabled = false; btn.textContent = 'Send reset link';
